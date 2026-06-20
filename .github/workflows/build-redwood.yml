@@ -178,27 +178,78 @@ jobs:
               else:
                   print("[=] task_mmu.c: susfs_def.h already present")
 
+          ITERATE_GUARD = (
+              "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && "
+              "(LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))\n"
+          )
+
+          def patch_iterate_guards(content: str) -> tuple[str, int]:
+              lines = content.splitlines(keepends=True)
+              out = []
+              patched = 0
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  if not line.lstrip().startswith(
+                      "#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)"
+                  ):
+                      out.append(line)
+                      i += 1
+                      continue
+                  j = i + 1
+                  block = line
+                  cur = line
+                  while cur.rstrip().endswith("\\") and j < len(lines):
+                      block += lines[j]
+                      cur = lines[j]
+                      j += 1
+                  lookahead = "".join(lines[i : min(i + 12, len(lines))])
+                  if (
+                      "ksu_wrapper_iterate" in lookahead
+                      or "p->ops.iterate" in lookahead
+                      or "KSU_HAS_ITERATE_DIR" in block
+                  ):
+                      out.append(ITERATE_GUARD)
+                      patched += 1
+                      i = j
+                      continue
+                  out.append(line)
+                  i += 1
+              return "".join(out), patched
+
+          def verify_iterate_guards(content: str) -> list[str]:
+              issues = []
+              for needle in ("static int ksu_wrapper_iterate", "p->ops.iterate"):
+                  pos = content.find(needle)
+                  if pos < 0:
+                      continue
+                  guard_start = content.rfind("#if", 0, pos)
+                  if guard_start < 0:
+                      issues.append(f"missing #if before {needle}")
+                      continue
+                  guard_end = content.find("\n", guard_start)
+                  guard = content[guard_start:guard_end]
+                  if "KERNEL_VERSION(5, 1, 0)" not in guard:
+                      issues.append(f"bad guard before {needle}: {guard.strip()}")
+                  if "KERNEL_VERSION(6, 6, 0)" in guard:
+                      issues.append(f"still uses 6.6 guard before {needle}: {guard.strip()}")
+              return issues
+
           fw = root / "drivers/kernelsu/infra/file_wrapper.c"
           if not fw.is_file():
               errors.append(f"missing {fw}")
           else:
               text = fw.read_text()
-              old_if = (
-                  r"#if LINUX_VERSION_CODE < KERNEL_VERSION\(6, 6, 0\) &&\s*"
-                  r"\(LINUX_VERSION_CODE > KERNEL_VERSION\(3, 11, 0\) \|\| defined\(KSU_HAS_ITERATE_DIR\)\)"
-              )
-              new_if = (
-                  "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && "
-                  "(LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))"
-              )
-              updated, n = re.subn(old_if, new_if, text)
-              if n == 0 and "KERNEL_VERSION(5, 1, 0)" not in text:
-                  errors.append("file_wrapper.c: iterate guard not patched (pattern mismatch)")
+              updated, n = patch_iterate_guards(text)
+              issues = verify_iterate_guards(updated)
+              if issues:
+                  errors.extend(f"file_wrapper.c: {issue}" for issue in issues)
               elif n > 0:
                   fw.write_text(updated)
                   print(f"[+] file_wrapper.c: disabled f_op->iterate on kernel >= 5.1 ({n} site(s))")
               else:
-                  print("[=] file_wrapper.c: iterate guard already patched")
+                  fw.write_text(updated)
+                  print("[=] file_wrapper.c: iterate guards already correct")
 
           sys_path = root / "kernel/sys.c"
           if sys_path.is_file():
