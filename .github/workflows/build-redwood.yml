@@ -115,6 +115,9 @@ jobs:
           # redwood.config wrongly disables storage stack required by crDroid
           CONFIG_MMC=y
           CONFIG_QCOM_FSA4480_I2C=y
+          # Scarlet 5.4 has no blk inline encryption API → cqhci-crypto.c fails to compile
+          # CONFIG_MMC_CRYPTO is not set
+          # CONFIG_BLK_INLINE_ENCRYPTION is not set
           # Scarlet compile stability (crdroid ikconfig had enabled these → vmscan/stats errors)
           # CONFIG_MEMCG is not set
           # CONFIG_TASK_DELAY_ACCT is not set
