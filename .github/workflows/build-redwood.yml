@@ -120,6 +120,14 @@ jobs:
       - name: Patch Kernel of SUSFS
         uses: ./.github/workflows/patch-susfs
 
+      - name: Apply redwood fixed patches
+        run: |
+          cd $GITHUB_WORKSPACE/device_kernel
+          PATCH=$GITHUB_WORKSPACE/patches/redwood/susfs_fixed.patch
+          test -f "$PATCH" || { echo "!! missing $PATCH — commit patches/redwood/susfs_fixed.patch to this repo"; exit 1; }
+          patch -p1 --forward < "$PATCH" || true
+          echo "[+] redwood susfs_fixed applied (task_mmu include + sys.c uname + file_wrapper 5.4)"
+
       - name: Patch for no-kprobe
         uses: ./.github/workflows/patch-no-kprobe
 
