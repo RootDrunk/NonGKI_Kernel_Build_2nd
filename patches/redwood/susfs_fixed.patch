@@ -49,7 +49,7 @@ index 0000000..3333333 100644
  
  #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0) &&                                                                    \
 -    (LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))
-+    ((LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0)) || defined(KSU_HAS_ITERATE_DIR))
++    LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && (LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))
  static int ksu_wrapper_iterate(struct file *fp, struct dir_context *dc)
  {
      struct ksu_file_wrapper *data = fp->private_data;
@@ -58,7 +58,7 @@ index 0000000..3333333 100644
  #endif
  #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0) &&                                                                    \
 -    (LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))
-+    ((LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0)) || defined(KSU_HAS_ITERATE_DIR))
++    LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && (LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))
      p->ops.iterate = fp->f_op->iterate ? ksu_wrapper_iterate : NULL;
  #endif
  #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0) && !defined(KSU_HAS_ITERATE_DIR)
