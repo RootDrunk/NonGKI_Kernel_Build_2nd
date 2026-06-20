@@ -1,27 +1,22 @@
 name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 
-# 用法见同目录 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
-# 放置路径(在 fork 的 JackA1ltman/NonGKI_Kernel_Build_2nd 仓库内):
-#   .github/workflows/build-redwood.yml
-# 然后 Actions 里手动触发本工作流即可。
+# 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
+# fork 路径: .github/workflows/build-redwood.yml
 
 on:
   workflow_call:
   workflow_dispatch:
 
 env:
-  # ---------- 设备 ----------
   DEVICE_NAME : "redmi_note_12_pro_speed"
   DEVICE_CODENAME : "redwood"
 
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
   EXTRA_CMDS : "LD=ld.lld"
 
-  # ---------- 内核源 (Scarlet sm7325, redwood 分支) ----------
   KERNEL_SOURCE : "https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git"
   KERNEL_BRANCH : "redwood"
 
-  # ---------- 工具链 (LineageOS clang r416183b, 5.4 验证可用) ----------
   CLANG_SOURCE : "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git"
   CLANG_BRANCH : "lineage-20.0"
 
@@ -31,43 +26,34 @@ env:
   GCC_32_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9.git"
   GCC_32_BRANCH : "android12L-release"
 
-  # ---------- defconfig: 从 crDroid 运行中 boot 提取 ikconfig 再合并 KSU ----------
   DEFCONFIG_SOURCE: ""
   DEFCONFIG_NAME : "vendor/xiaomi-qgki_defconfig"
   DEFCONFIG_ORIGIN_IMAGE: ""
   DEFCONFIG_FROM_BOOT: false
 
-  # v5: 先编「仅 ReSukiSU、关 SUSFS」验证能开机；能进桌面后再改 true 重编满血版
+  # 两阶段编译开关（见文档 §9）:
+  #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false  → 仅 ReSukiSU，验证能开机
+  #   阶段2 满血版:    SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true   → ReSukiSU + SUSFS
   SUSFS_BOOT_TEST: "true"
+  SUSFS_ENABLE : false
 
-  # ---------- KernelSU: SukiSU 系 (ReSukiSU, 5.4 已验证) ----------
   KERNELSU_SOURCE : ""
   KERNELSU_BRANCH : ""
   KERNELSU_AUTO_GET : "true"
-  KERNELSU_AUTO_FORK : "resukisu" # xxksu, rsuntk, next, resukisu and sukisu
+  KERNELSU_AUTO_FORK : "resukisu"
 
-  # ---------- SUSFS: 框架自动匹配版本（SUSFS_BOOT_TEST=true 时强制关闭） ----------
-  SUSFS_ENABLE : true
-  SUSFS_FIXED : false   # 首跑用 false(免自建补丁仓); 若有 .rej 再改 true + 下面两项
-
+  SUSFS_FIXED : false
   AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
-
-  # MKBOOTIMG 打包时由下方 Prepare 步骤从 crDroid OTA 解出 boot.img，此处留空即可
   BOOT_SOURCE : ""
 
-  # crDroid 16 redwood OTA（与 device-backups/redwood 内 zip 一致）
   CRDROID_ZIP_URL : "https://master.dl.sourceforge.net/project/crdroid/redwood/12.x/crDroidAndroid-16.0-20260610-redwood-v12.11.zip"
 
   NEED_DTBO : false
   NEED_SAFE_DTBO : false
+  ROM_TEXT : "crdroid_a16_ksu"
 
-  ROM_TEXT : "crdroid_a16"
-
-  # ---------- 其他 ----------
   PYTHON_VERSION: "3"
-
-  # build-ready 阶段仍用 Anykernel3（免 BOOT_SOURCE）；实际打包在 Pack 步骤走 MKBOOTIMG
   PACK_METHOD: "Anykernel3"
   PACK_KMODULES: "false"
 
@@ -76,33 +62,28 @@ env:
 
   PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches"
   PATCHES_BRANCH: "mi_kernel"
-
-  SUSFS_FOLDER_FIXED: ""   # 首跑留空
-  SUSFS_PATCH_FIXED: ""    # 首跑留空; 出 .rej 后填修补补丁名
+  SUSFS_FOLDER_FIXED: ""
+  SUSFS_PATCH_FIXED: ""
 
   REKERNEL_ENABLE: "false"
   DROIDSPACES_ENABLE: "false"
-
-  HOOK_METHOD: "syscall"  # 非 GKI 手动 hook
-
-  KERNEL_PATCH: "false"   # 5.4 > 4.9, 不需要
-
-  KPM_ENABLE: "false"     # 5.4 非GKI 暂不开; KPM 留给 GKI 量产机
+  HOOK_METHOD: "syscall"
+  KERNEL_PATCH: "false"
+  KPM_ENABLE: "false"
   KPM_INLINE: "false"
   KPM_KPATCH_NEXT: "false"
   KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux"
 
   BASEBAND_GUARD_ENABLE: "false"
   BASEBAND_GUARD_BOOT: "false"
-
   GENERATE_DTB: "false"
   GENERATE_CHIP: "qcom"
 
-  BUILD_DEBUGGER: "true"  # 首跑开: 抓 .rej 冲突并作为 artifact 上传
-  SKIP_PATCH: "true"      # 配合上面: 即使有 .rej 也继续尝试编译, 不硬失败
+  BUILD_DEBUGGER: "true"
+  SKIP_PATCH: "true"
 
-  BUILD_OTHER_CONFIG: "true"  # 合并 fragment
-  MERGE_CONFIG_FILES: "vendor/redwood.config"
+  BUILD_OTHER_CONFIG: "true"
+  MERGE_CONFIG_FILES: "vendor/redwood.config,vendor/crdroid_runtime.config"
 
   FREE_MORE_SPACE: "false"
 
@@ -125,8 +106,7 @@ jobs:
       - name: Get neccssary tools
         uses: ./.github/workflows/build-ready
 
-      # 从 crDroid 同版本 boot 提取 ikconfig，避免 Scarlet 默认 defconfig 与 crDroid 用户态不匹配导致 bootloop
-      - name: Baseline defconfig from crDroid boot
+      - name: Extract crDroid ikconfig fragment
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -140,17 +120,17 @@ jobs:
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg mkboottools -b main-kernel-build-2024 --depth=1
           mkboottools/unpack_bootimg.py --boot_img boot_extract/boot.img
           test -s out/kernel
-          cp -fp out/kernel /tmp/crdroid_stock_kernel
-          "$GITHUB_WORKSPACE/device_kernel/scripts/extract-ikconfig" /tmp/crdroid_stock_kernel > /tmp/crdroid_stock.config
-          test -s /tmp/crdroid_stock.config
-          DEFCFG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
-          cp -fp "$DEFCFG" "${DEFCFG}.scarlet.bak"
-          cp -fp /tmp/crdroid_stock.config "$DEFCFG"
-          echo "[+] defconfig replaced with ikconfig from crDroid boot ($(wc -l < "$DEFCFG") lines)"
-          rm -rf boot_extract payload.bin crdroid.zip pdu.tar.gz payload-dumper-go out boot.img
+          "$GITHUB_WORKSPACE/device_kernel/scripts/extract-ikconfig" out/kernel \
+            > "$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/crdroid_runtime.config"
+          test -s "$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/crdroid_runtime.config"
+          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/crdroid_runtime.config"
+          grep -Ev '^(CONFIG_BUILD_ARM64_DT_OVERLAY=|# CONFIG_BUILD_ARM64_DT_OVERLAY is not set|CONFIG_MACH_XIAOMI=|# CONFIG_MACH_XIAOMI is not set|CONFIG_MACH_XIAOMI_REDWOOD=|# CONFIG_MACH_XIAOMI_REDWOOD is not set)$' \
+            "$FRAG" > "${FRAG}.tmp" && mv "${FRAG}.tmp" "$FRAG"
+          echo "[OK] crDroid ikconfig fragment saved (merge only, scarlet base kept)"
+          rm -rf boot_extract payload.bin crdroid.zip pdu.tar.gz payload-dumper-go out boot.img mkboottools
 
       - name: Patch Kernel of SUSFS
-        if: env.SUSFS_BOOT_TEST != 'true'
+        if: env.SUSFS_ENABLE == 'true'
         uses: ./.github/workflows/patch-susfs
 
       - name: Patch for no-kprobe
@@ -158,8 +138,14 @@ jobs:
 
       - name: Extra Kernel Options
         run: |
-          cd $GITHUB_WORKSPACE/device_kernel
-          echo "CONFIG_TMPFS_XATTR=y" >> ./arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          DEFCFG="./arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          {
+            echo "CONFIG_TMPFS_XATTR=y"
+            echo "CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+            echo "CONFIG_MACH_XIAOMI=y"
+            echo "CONFIG_MACH_XIAOMI_REDWOOD=y"
+          } >> "$DEFCFG"
 
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
@@ -177,45 +163,43 @@ jobs:
           swap-size-gb: 16
           remove-existing-swap-files: true
 
-      # 必须在 Build Process 之前、且 KSU/SUSFS 全部打完后再跑（不依赖 fork 里单独上传 patch 文件）
-      - name: Disable SUSFS for boot test build
-        if: env.SUSFS_BOOT_TEST == 'true'
-        run: |
-          echo "[+] SUSFS_BOOT_TEST: building ReSukiSU-only kernel first (no SUSFS patches)"
-          echo "SUSFS_ENABLE=false" >> "$GITHUB_ENV"
-
       - name: Apply redwood 5.4 compile fixes
+        env:
+          SUSFS_BOOT_TEST: ${{ env.SUSFS_BOOT_TEST }}
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
           python3 <<'PY'
+          import os
           import re
           import sys
           from pathlib import Path
 
+          skip_susfs = os.environ.get("SUSFS_BOOT_TEST", "").lower() == "true"
           root = Path(".")
           errors = []
 
-          task_mmu = root / "fs/proc/task_mmu.c"
-          if not task_mmu.is_file():
-              errors.append(f"missing {task_mmu}")
-          else:
-              text = task_mmu.read_text()
-              needle = "#include <linux/pkeys.h>"
-              block = (
-                  "#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) "
-                  "|| defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
-                  "#include <linux/susfs_def.h>\n"
-                  "#endif"
-              )
-              if "susfs_def.h" not in text:
-                  if needle not in text:
-                      errors.append("task_mmu.c: cannot find pkeys.h anchor")
-                  else:
-                      text = text.replace(needle, needle + "\n\n" + block, 1)
-                      task_mmu.write_text(text)
-                      print("[+] task_mmu.c: added susfs_def.h include")
+          if not skip_susfs:
+              task_mmu = root / "fs/proc/task_mmu.c"
+              if not task_mmu.is_file():
+                  errors.append(f"missing {task_mmu}")
               else:
-                  print("[=] task_mmu.c: susfs_def.h already present")
+                  text = task_mmu.read_text()
+                  needle = "#include <linux/pkeys.h>"
+                  block = (
+                      "#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) "
+                      "|| defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
+                      "#include <linux/susfs_def.h>\n"
+                      "#endif"
+                  )
+                  if "susfs_def.h" not in text:
+                      if needle not in text:
+                          errors.append("task_mmu.c: cannot find pkeys.h anchor")
+                      else:
+                          text = text.replace(needle, needle + "\n\n" + block, 1)
+                          task_mmu.write_text(text)
+                          print("[+] task_mmu.c: added susfs_def.h include")
+                  else:
+                      print("[=] task_mmu.c: susfs_def.h already present")
 
           ITERATE_GUARD = (
               "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && "
@@ -341,34 +325,37 @@ jobs:
           else:
               errors.append(f"missing {hooks}")
 
-          sys_path = root / "kernel/sys.c"
-          if sys_path.is_file():
-              text = sys_path.read_text()
-              if "susfs_spoof_uname" not in text:
-                  anchor = "SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)"
-                  decl = (
-                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
-                      "extern struct static_key_false susfs_is_uname_spoof_buffer_set;\n"
-                      "extern void susfs_spoof_uname(struct new_utsname *tmp);\n"
-                      "#endif\n"
-                  )
-                  hook = (
-                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
-                      "\tif (static_branch_likely(&susfs_is_uname_spoof_buffer_set))\n"
-                      "\t\tsusfs_spoof_uname(&tmp);\n"
-                      "#endif\n"
-                  )
-                  if anchor in text:
-                      text = text.replace(anchor, decl + anchor, 1)
-                      text = text.replace(
-                          "memcpy(&tmp, utsname(), sizeof(tmp));",
-                          "memcpy(&tmp, utsname(), sizeof(tmp));\n" + hook,
-                          1,
+          if not skip_susfs:
+              sys_path = root / "kernel/sys.c"
+              if sys_path.is_file():
+                  text = sys_path.read_text()
+                  if "susfs_spoof_uname" not in text:
+                      anchor = "SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)"
+                      decl = (
+                          "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+                          "extern struct static_key_false susfs_is_uname_spoof_buffer_set;\n"
+                          "extern void susfs_spoof_uname(struct new_utsname *tmp);\n"
+                          "#endif\n"
                       )
-                      sys_path.write_text(text)
-                      print("[+] sys.c: added SUSFS uname spoof hook")
-              else:
-                  print("[=] sys.c: uname spoof already present")
+                      hook = (
+                          "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+                          "\tif (static_branch_likely(&susfs_is_uname_spoof_buffer_set))\n"
+                          "\t\tsusfs_spoof_uname(&tmp);\n"
+                          "#endif\n"
+                      )
+                      if anchor in text:
+                          text = text.replace(anchor, decl + anchor, 1)
+                          text = text.replace(
+                              "memcpy(&tmp, utsname(), sizeof(tmp));",
+                              "memcpy(&tmp, utsname(), sizeof(tmp));\n" + hook,
+                              1,
+                          )
+                          sys_path.write_text(text)
+                          print("[+] sys.c: added SUSFS uname spoof hook")
+                  else:
+                      print("[=] sys.c: uname spoof already present")
+          else:
+              print("[=] boot-test build: skip sys.c SUSFS hooks")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
@@ -382,88 +369,31 @@ jobs:
       - name: Build Process
         uses: ./.github/workflows/build-process
 
-      # 用 crDroid 同版本 boot.img 做基底重打包，避免纯 Image sideload 与 ramdisk/header 不匹配导致 bootloop
-      - name: Pack redwood boot (MKBOOTIMG + AnyKernel3)
+      - name: Pack AnyKernel3 (redwood, sideload only)
         run: |
           set -euxo pipefail
-          cd "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE/device_kernel"
           TIME=$(date +"%Y%m%d%H%M%S")
           IMAGE_DIR="$GITHUB_WORKSPACE/device_kernel/out/arch/${{ env.KERNEL_ARCH }}/boot"
-          BOOT_BASE="$GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img"
 
-          echo "[+] Fetch crDroid OTA and extract boot.img ..."
-          ${{ env.CURLX }} "${{ env.CRDROID_ZIP_URL }}" crdroid.zip
-          unzip -j -o crdroid.zip payload.bin
-          ${{ env.CURLX }} "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz" pdu.tar.gz
-          tar -xzf pdu.tar.gz payload-dumper-go
-          chmod +x payload-dumper-go
-          ./payload-dumper-go -p boot -o boot_extract payload.bin
-          test -s boot_extract/boot.img
-          cp -fp boot_extract/boot.img "$BOOT_BASE"
-          ls -lh "$BOOT_BASE"
-
-          echo "[+] MKBOOTIMG repack with crDroid boot header ..."
-          git clone https://android.googlesource.com/platform/system/tools/mkbootimg mkboottools -b main-kernel-build-2024 --depth=1
-          FORMAT_MKBOOTING=$(mkboottools/unpack_bootimg.py --boot_img="$BOOT_BASE" --format mkbootimg)
-          mkboottools/unpack_bootimg.py --boot_img "$BOOT_BASE"
-
-          if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
-            rm -f out/kernel
-            cp -fp "$IMAGE_DIR/Image.gz-dtb" out/kernel
-            echo "[+] Using Image.gz-dtb"
-          elif [[ -f "$IMAGE_DIR/Image.gz" ]]; then
-            rm -f out/kernel
-            cp -fp "$IMAGE_DIR/Image.gz" out/kernel
-            echo "[+] Using Image.gz"
-          elif [[ -f "$IMAGE_DIR/Image" ]]; then
-            rm -f out/kernel
-            cp -fp "$IMAGE_DIR/Image" out/kernel
-            echo "[+] Using Image"
-          else
-            echo "[-] No kernel image under $IMAGE_DIR"
-            ls -la "$IMAGE_DIR" || true
-            exit 1
-          fi
-
-          if [[ -f "$IMAGE_DIR/dtb.img" ]]; then
-            cp -fp "$IMAGE_DIR/dtb.img" out/dtb
-            echo "[+] Using dtb.img"
-          elif [[ -f "$IMAGE_DIR/dtb" ]]; then
-            cp -fp "$IMAGE_DIR/dtb" out/dtb
-            echo "[+] Using dtb"
-          fi
-
-          BASE_SIZE=$(stat -c%s "$BOOT_BASE")
-          if [[ -s out/ramdisk ]]; then
-            echo "[+] ramdisk present in stock boot ($(stat -c%s out/ramdisk) bytes)"
-          else
-            echo "[=] no ramdisk in stock boot (vendor_boot split layout)"
-          fi
-
-          OUT_IMG="${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-${TIME}-image.img"
-          eval "mkboottools/mkbootimg.py $FORMAT_MKBOOTING -o $OUT_IMG"
-          OUT_SIZE=$(stat -c%s "$OUT_IMG")
-          ls -lh "$OUT_IMG"
-          MIN_SIZE=$((BASE_SIZE * 70 / 100))
-          if [[ "$OUT_SIZE" -lt "$MIN_SIZE" ]]; then
-            echo "[-] FATAL: repacked boot ${OUT_SIZE}B << stock ${BASE_SIZE}B — ramdisk/header lost, abort."
-            exit 1
-          fi
-          echo "[OK] repacked boot size check passed (${OUT_SIZE} vs ${BASE_SIZE})"
-
-          echo "[+] Patch AnyKernel3 for redwood (recovery sideload fallback) ..."
-          cd "$GITHUB_WORKSPACE/device_kernel"
           if [[ ! -d Anykernel3 ]]; then
             git clone "${{ env.AK3_SOURCE }}" -b "${{ env.AK3_BRANCH }}" Anykernel3 --depth=1
           fi
+
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            KSU_LABEL="ReSukiSU redwood crDroid16 boot-test"
+          else
+            KSU_LABEL="ReSukiSU+SUSFS redwood crDroid16"
+          fi
+
           AK3=Anykernel3/anykernel.sh
-          sed -i 's/ExampleKernel by osm0sis @ xda-developers/ReSukiSU+SUSFS redwood crDroid16 by NonGKI/g' "$AK3"
+          sed -i 's/ExampleKernel by osm0sis @ xda-developers/NonGKI redwood by JackAltman/g' "$AK3"
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' "$AK3"
           sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' "$AK3"
           sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' "$AK3"
           sed -i 's/device.name1=.*/device.name1=redwood;/' "$AK3"
           sed -i 's/device.name2=.*/device.name2=22101320C;/' "$AK3"
-          sed -i 's/kernel.string=.*/kernel.string=ReSukiSU+SUSFS redwood crDroid16;/' "$AK3"
+          sed -i "s/kernel.string=.*/kernel.string=${KSU_LABEL};/" "$AK3"
           if grep -q '^PATCH_VBMETA_FLAG=' "$AK3"; then
             sed -i 's/^PATCH_VBMETA_FLAG=.*/PATCH_VBMETA_FLAG=auto;/' "$AK3"
           else
@@ -473,11 +403,19 @@ jobs:
           mkdir -p tmp
           if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
             cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/
+            echo "[+] pack Image.gz-dtb"
           elif [[ -f "$IMAGE_DIR/Image.gz" ]]; then
             cp -fp "$IMAGE_DIR/Image.gz" tmp/
+            echo "[+] pack Image.gz"
           elif [[ -f "$IMAGE_DIR/Image" ]]; then
             cp -fp "$IMAGE_DIR/Image" tmp/
+            echo "[+] pack Image"
+          else
+            echo "[-] no kernel image in $IMAGE_DIR"
+            ls -la "$IMAGE_DIR" || true
+            exit 1
           fi
+
           if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
             cp -fp "$IMAGE_DIR/dtbo.img" tmp/
           fi
@@ -486,26 +424,19 @@ jobs:
           elif [[ -f "$IMAGE_DIR/dtb" ]]; then
             cp -fp "$IMAGE_DIR/dtb" tmp/
           fi
+
           cp -rp ./Anykernel3/* tmp/
           cd tmp
-          7za a -mx9 ak3.zip *
+          7za a -mx9 tmp.zip *
           cd ..
           AK3_ZIP="${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-${TIME}-Anykernel3.zip"
-          cp -fp tmp/ak3.zip "$GITHUB_WORKSPACE/$AK3_ZIP"
-          rm -rf tmp boot_extract payload.bin crdroid.zip pdu.tar.gz payload-dumper-go mkboottools out boot.img
-          rm -f "$BOOT_BASE"
+          cp -fp tmp/tmp.zip "$GITHUB_WORKSPACE/$AK3_ZIP"
+          rm -rf tmp
 
-          echo "PACK_METHOD=MKBOOTIMG" >> "$GITHUB_ENV"
-          echo "PACK_NAME=$OUT_IMG" >> "$GITHUB_ENV"
-          echo "AK3_PACK_NAME=$AK3_ZIP" >> "$GITHUB_ENV"
-          echo "[OK] Primary artifact: $OUT_IMG"
-          echo "[OK] Fallback artifact: $AK3_ZIP"
+          echo "PACK_METHOD=Anykernel3" >> "$GITHUB_ENV"
+          echo "PACK_NAME=$AK3_ZIP" >> "$GITHUB_ENV"
+          echo "[OK] sideload artifact: $AK3_ZIP"
+          echo "[!!] DO NOT fastboot flash raw Image or *-image.img on redwood"
 
       - name: Upload Artifacts
         uses: ./.github/workflows/upload-files
-
-      - name: Upload AnyKernel3 fallback
-        uses: actions/upload-artifact@v7
-        with:
-          name: Kernel-${{ env.AK3_PACK_NAME }}
-          path: ${{ env.AK3_PACK_NAME }}
