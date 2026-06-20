@@ -31,11 +31,14 @@ env:
   GCC_32_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9.git"
   GCC_32_BRANCH : "android12L-release"
 
-  # ---------- defconfig: base + fragment ----------
+  # ---------- defconfig: 从 crDroid 运行中 boot 提取 ikconfig 再合并 KSU ----------
   DEFCONFIG_SOURCE: ""
   DEFCONFIG_NAME : "vendor/xiaomi-qgki_defconfig"
   DEFCONFIG_ORIGIN_IMAGE: ""
   DEFCONFIG_FROM_BOOT: false
+
+  # v5: 先编「仅 ReSukiSU、关 SUSFS」验证能开机；能进桌面后再改 true 重编满血版
+  SUSFS_BOOT_TEST: "true"
 
   # ---------- KernelSU: SukiSU 系 (ReSukiSU, 5.4 已验证) ----------
   KERNELSU_SOURCE : ""
@@ -43,7 +46,7 @@ env:
   KERNELSU_AUTO_GET : "true"
   KERNELSU_AUTO_FORK : "resukisu" # xxksu, rsuntk, next, resukisu and sukisu
 
-  # ---------- SUSFS: 框架自动匹配版本 ----------
+  # ---------- SUSFS: 框架自动匹配版本（SUSFS_BOOT_TEST=true 时强制关闭） ----------
   SUSFS_ENABLE : true
   SUSFS_FIXED : false   # 首跑用 false(免自建补丁仓); 若有 .rej 再改 true + 下面两项
 
@@ -122,7 +125,32 @@ jobs:
       - name: Get neccssary tools
         uses: ./.github/workflows/build-ready
 
+      # 从 crDroid 同版本 boot 提取 ikconfig，避免 Scarlet 默认 defconfig 与 crDroid 用户态不匹配导致 bootloop
+      - name: Baseline defconfig from crDroid boot
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE"
+          ${{ env.CURLX }} "${{ env.CRDROID_ZIP_URL }}" crdroid.zip
+          unzip -j -o crdroid.zip payload.bin
+          ${{ env.CURLX }} "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz" pdu.tar.gz
+          tar -xzf pdu.tar.gz payload-dumper-go
+          chmod +x payload-dumper-go
+          ./payload-dumper-go -p boot -o boot_extract payload.bin
+          test -s boot_extract/boot.img
+          git clone https://android.googlesource.com/platform/system/tools/mkbootimg mkboottools -b main-kernel-build-2024 --depth=1
+          mkboottools/unpack_bootimg.py --boot_img boot_extract/boot.img
+          test -s out/kernel
+          cp -fp out/kernel /tmp/crdroid_stock_kernel
+          "$GITHUB_WORKSPACE/device_kernel/scripts/extract-ikconfig" /tmp/crdroid_stock_kernel > /tmp/crdroid_stock.config
+          test -s /tmp/crdroid_stock.config
+          DEFCFG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          cp -fp "$DEFCFG" "${DEFCFG}.scarlet.bak"
+          cp -fp /tmp/crdroid_stock.config "$DEFCFG"
+          echo "[+] defconfig replaced with ikconfig from crDroid boot ($(wc -l < "$DEFCFG") lines)"
+          rm -rf boot_extract payload.bin crdroid.zip pdu.tar.gz payload-dumper-go out boot.img
+
       - name: Patch Kernel of SUSFS
+        if: env.SUSFS_BOOT_TEST != 'true'
         uses: ./.github/workflows/patch-susfs
 
       - name: Patch for no-kprobe
@@ -150,6 +178,12 @@ jobs:
           remove-existing-swap-files: true
 
       # 必须在 Build Process 之前、且 KSU/SUSFS 全部打完后再跑（不依赖 fork 里单独上传 patch 文件）
+      - name: Disable SUSFS for boot test build
+        if: env.SUSFS_BOOT_TEST == 'true'
+        run: |
+          echo "[+] SUSFS_BOOT_TEST: building ReSukiSU-only kernel first (no SUSFS patches)"
+          echo "SUSFS_ENABLE=false" >> "$GITHUB_ENV"
+
       - name: Apply redwood 5.4 compile fixes
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
@@ -399,9 +433,23 @@ jobs:
             echo "[+] Using dtb"
           fi
 
+          BASE_SIZE=$(stat -c%s "$BOOT_BASE")
+          if [[ -s out/ramdisk ]]; then
+            echo "[+] ramdisk present in stock boot ($(stat -c%s out/ramdisk) bytes)"
+          else
+            echo "[=] no ramdisk in stock boot (vendor_boot split layout)"
+          fi
+
           OUT_IMG="${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-${TIME}-image.img"
           eval "mkboottools/mkbootimg.py $FORMAT_MKBOOTING -o $OUT_IMG"
+          OUT_SIZE=$(stat -c%s "$OUT_IMG")
           ls -lh "$OUT_IMG"
+          MIN_SIZE=$((BASE_SIZE * 70 / 100))
+          if [[ "$OUT_SIZE" -lt "$MIN_SIZE" ]]; then
+            echo "[-] FATAL: repacked boot ${OUT_SIZE}B << stock ${BASE_SIZE}B — ramdisk/header lost, abort."
+            exit 1
+          fi
+          echo "[OK] repacked boot size check passed (${OUT_SIZE} vs ${BASE_SIZE})"
 
           echo "[+] Patch AnyKernel3 for redwood (recovery sideload fallback) ..."
           cd "$GITHUB_WORKSPACE/device_kernel"
