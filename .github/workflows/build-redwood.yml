@@ -251,6 +251,57 @@ jobs:
                   fw.write_text(updated)
                   print("[=] file_wrapper.c: iterate guards already correct")
 
+          selinuxfs = root / "security/selinux/selinuxfs.c"
+          if selinuxfs.is_file():
+              text = selinuxfs.read_text()
+              orig = text
+              blocks = [
+                  (
+                      "#if defined(CONFIG_KSU) && !defined(CONFIG_KPROBES)\n"
+                      "extern void ksu_sel_write_context(struct file **file, char **buf, size_t *size);\n"
+                      "#endif\n"
+                  ),
+                  (
+                      "#if defined(CONFIG_KSU) && !defined(CONFIG_KPROBES)\n"
+                      "\tksu_sel_write_context(&file, &data, &size);\n"
+                      "#endif\n"
+                  ),
+              ]
+              for block in blocks:
+                  if block in text:
+                      text = text.replace(block, "", 1)
+              if "ksu_sel_write_context" in text:
+                  errors.append("selinuxfs.c: stale ksu_sel_write_context hook remains")
+              elif text != orig:
+                  selinuxfs.write_text(text)
+                  print("[+] selinuxfs.c: removed stale ksu_sel_write_context hook")
+              else:
+                  print("[=] selinuxfs.c: no stale ksu_sel_write_context hook")
+          else:
+              errors.append(f"missing {selinuxfs}")
+
+          hooks = root / "security/selinux/hooks.c"
+          if hooks.is_file():
+              text = hooks.read_text()
+              orig = text
+              text = text.replace(
+                  "extern int ksu_hide_setprocattr(const char *name, void *value, size_t size);",
+                  "extern int ksu_handle_selinux_setprocattr(const char *name, void *value, size_t size);",
+              )
+              text = text.replace(
+                  "ksu_hide_setprocattr(name, value, size);",
+                  "ksu_handle_selinux_setprocattr(name, value, size);",
+              )
+              if "ksu_hide_setprocattr" in text:
+                  errors.append("hooks.c: stale ksu_hide_setprocattr reference remains")
+              elif text != orig:
+                  hooks.write_text(text)
+                  print("[+] hooks.c: renamed ksu_hide_setprocattr -> ksu_handle_selinux_setprocattr")
+              else:
+                  print("[=] hooks.c: setprocattr hook already up to date")
+          else:
+              errors.append(f"missing {hooks}")
+
           sys_path = root / "kernel/sys.c"
           if sys_path.is_file():
               text = sys_path.read_text()
