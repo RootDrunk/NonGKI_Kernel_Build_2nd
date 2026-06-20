@@ -120,14 +120,6 @@ jobs:
       - name: Patch Kernel of SUSFS
         uses: ./.github/workflows/patch-susfs
 
-      - name: Apply redwood fixed patches
-        run: |
-          cd $GITHUB_WORKSPACE/device_kernel
-          PATCH=$GITHUB_WORKSPACE/patches/redwood/susfs_fixed.patch
-          test -f "$PATCH" || { echo "!! missing $PATCH — commit patches/redwood/susfs_fixed.patch to this repo"; exit 1; }
-          patch -p1 --forward < "$PATCH" || true
-          echo "[+] redwood susfs_fixed applied (task_mmu include + sys.c uname + file_wrapper 5.4)"
-
       - name: Patch for no-kprobe
         uses: ./.github/workflows/patch-no-kprobe
 
@@ -151,6 +143,100 @@ jobs:
           swap-space-path: /swapfile
           swap-size-gb: 16
           remove-existing-swap-files: true
+
+      # 必须在 Build Process 之前、且 KSU/SUSFS 全部打完后再跑（不依赖 fork 里单独上传 patch 文件）
+      - name: Apply redwood 5.4 compile fixes
+        run: |
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          python3 <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(".")
+          errors = []
+
+          task_mmu = root / "fs/proc/task_mmu.c"
+          if not task_mmu.is_file():
+              errors.append(f"missing {task_mmu}")
+          else:
+              text = task_mmu.read_text()
+              needle = "#include <linux/pkeys.h>"
+              block = (
+                  "#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) "
+                  "|| defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
+                  "#include <linux/susfs_def.h>\n"
+                  "#endif"
+              )
+              if "susfs_def.h" not in text:
+                  if needle not in text:
+                      errors.append("task_mmu.c: cannot find pkeys.h anchor")
+                  else:
+                      text = text.replace(needle, needle + "\n\n" + block, 1)
+                      task_mmu.write_text(text)
+                      print("[+] task_mmu.c: added susfs_def.h include")
+              else:
+                  print("[=] task_mmu.c: susfs_def.h already present")
+
+          fw = root / "drivers/kernelsu/infra/file_wrapper.c"
+          if not fw.is_file():
+              errors.append(f"missing {fw}")
+          else:
+              text = fw.read_text()
+              old_if = (
+                  r"#if LINUX_VERSION_CODE < KERNEL_VERSION\(6, 6, 0\) &&\s*"
+                  r"\(LINUX_VERSION_CODE > KERNEL_VERSION\(3, 11, 0\) \|\| defined\(KSU_HAS_ITERATE_DIR\)\)"
+              )
+              new_if = (
+                  "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && "
+                  "(LINUX_VERSION_CODE > KERNEL_VERSION(3, 11, 0) || defined(KSU_HAS_ITERATE_DIR))"
+              )
+              updated, n = re.subn(old_if, new_if, text)
+              if n == 0 and "KERNEL_VERSION(5, 1, 0)" not in text:
+                  errors.append("file_wrapper.c: iterate guard not patched (pattern mismatch)")
+              elif n > 0:
+                  fw.write_text(updated)
+                  print(f"[+] file_wrapper.c: disabled f_op->iterate on kernel >= 5.1 ({n} site(s))")
+              else:
+                  print("[=] file_wrapper.c: iterate guard already patched")
+
+          sys_path = root / "kernel/sys.c"
+          if sys_path.is_file():
+              text = sys_path.read_text()
+              if "susfs_spoof_uname" not in text:
+                  anchor = "SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)"
+                  decl = (
+                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+                      "extern struct static_key_false susfs_is_uname_spoof_buffer_set;\n"
+                      "extern void susfs_spoof_uname(struct new_utsname *tmp);\n"
+                      "#endif\n"
+                  )
+                  hook = (
+                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+                      "\tif (static_branch_likely(&susfs_is_uname_spoof_buffer_set))\n"
+                      "\t\tsusfs_spoof_uname(&tmp);\n"
+                      "#endif\n"
+                  )
+                  if anchor in text:
+                      text = text.replace(anchor, decl + anchor, 1)
+                      text = text.replace(
+                          "memcpy(&tmp, utsname(), sizeof(tmp));",
+                          "memcpy(&tmp, utsname(), sizeof(tmp));\n" + hook,
+                          1,
+                      )
+                      sys_path.write_text(text)
+                      print("[+] sys.c: added SUSFS uname spoof hook")
+              else:
+                  print("[=] sys.c: uname spoof already present")
+
+          if errors:
+              print("!! redwood compile fixes FAILED:")
+              for e in errors:
+                  print("  -", e)
+              sys.exit(1)
+
+          print("[OK] redwood 5.4 compile fixes applied")
+          PY
 
       - name: Build Process
         uses: ./.github/workflows/build-process
