@@ -496,7 +496,7 @@ jobs:
           7za a -mx9 tmp.zip *
           cd ..
           AK3_ZIP="${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-${TIME}-Anykernel3.zip"
-          cp -fp tmp/tmp.zip "$GITHUB_WORKSPACE/$AK3_ZIP"
+          cp -fp tmp/tmp.zip "$GITHUB_WORKSPACE/device_kernel/$AK3_ZIP"
           rm -rf tmp
 
           echo "PACK_METHOD=Anykernel3" >> "$GITHUB_ENV"
