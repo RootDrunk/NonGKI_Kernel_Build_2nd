@@ -354,6 +354,32 @@ jobs:
           else:
               print("[=] boot-test build: skip sys.c SUSFS hooks")
 
+          ufs_h = root / "drivers/scsi/ufs/ufs-qcom.h"
+          if ufs_h.is_file():
+              text = ufs_h.read_text()
+              orig = text
+              text = re.sub(
+                  r"(static inline void ufs_qcom_ice_disable\s*\([^)]*\)\s*\{\s*)"
+                  r"return 0;\s*(\})",
+                  r"\1\2",
+                  text,
+              )
+              if "static inline void ufs_qcom_ice_disable" in text and re.search(
+                  r"static inline void ufs_qcom_ice_disable[^{]*\{[^}]*return 0;",
+                  text,
+                  re.DOTALL,
+              ):
+                  errors.append(
+                      "ufs-qcom.h: void ufs_qcom_ice_disable stub still returns a value"
+                  )
+              elif text != orig:
+                  ufs_h.write_text(text)
+                  print("[+] ufs-qcom.h: fixed void ufs_qcom_ice_disable stub (no ICE)")
+              else:
+                  print("[=] ufs-qcom.h: ice_disable stub already correct")
+          else:
+              errors.append(f"missing {ufs_h}")
+
           if errors:
               print("!! redwood compile fixes FAILED:")
               for e in errors:
