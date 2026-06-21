@@ -118,6 +118,8 @@ jobs:
           # Scarlet 5.4 has no blk inline encryption API → cqhci-crypto.c fails to compile
           # CONFIG_MMC_CRYPTO is not set
           # CONFIG_BLK_INLINE_ENCRYPTION is not set
+          # QTI_CRYPTO_COMMON=n but HWKM=y → crypto-qti-platform.h stubs clash with crypto-qti-hwkm.c
+          # CONFIG_QTI_HW_KEY_MANAGER is not set
           # Scarlet compile stability (crdroid ikconfig had enabled these → vmscan/stats errors)
           # CONFIG_MEMCG is not set
           # CONFIG_TASK_DELAY_ACCT is not set
@@ -379,6 +381,47 @@ jobs:
                   print("[=] ufs-qcom.h: ice_disable stub already correct")
           else:
               errors.append(f"missing {ufs_h}")
+
+          platform_h = root / "drivers/soc/qcom/crypto-qti-platform.h"
+          if platform_h.is_file():
+              text = platform_h.read_text()
+              orig = text
+              old_else = "#else\nstatic inline int crypto_qti_program_key("
+              new_else = (
+                  "#elif IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)\n"
+                  "int crypto_qti_program_key(const struct ice_mmio_data *mmio_data,\n"
+                  "\t\tconst struct blk_crypto_key *key,\n"
+                  "\t\tunsigned int slot,\n"
+                  "\t\tunsigned int data_unit_mask, int capid);\n"
+                  "int crypto_qti_invalidate_key(const struct ice_mmio_data *mmio_data,\n"
+                  "\t\tunsigned int slot);\n"
+                  "int crypto_qti_derive_raw_secret_platform(\n"
+                  "\t\tconst u8 *wrapped_key,\n"
+                  "\t\tunsigned int wrapped_key_size, u8 *secret,\n"
+                  "\t\tunsigned int secret_size);\n"
+                  "void crypto_qti_disable_platform(void);\n"
+                  "#else\n"
+                  "static inline int crypto_qti_program_key("
+              )
+              if old_else in text and "#elif IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)" not in text:
+                  text = text.replace(old_else, new_else, 1)
+              if "static inline int crypto_qti_program_key(" in text:
+                  pos = text.find("static inline int crypto_qti_program_key(")
+                  guard = text.rfind("#if", 0, pos)
+                  guard_line = text[guard:text.find("\n", guard)] if guard >= 0 else ""
+                  if "#elif IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)" not in text[
+                      max(0, guard - 200) : pos
+                  ]:
+                      errors.append(
+                          "crypto-qti-platform.h: inline stubs still active with HWKM"
+                      )
+              if text != orig:
+                  platform_h.write_text(text)
+                  print("[+] crypto-qti-platform.h: HWKM-only forward decls (no stub clash)")
+              else:
+                  print("[=] crypto-qti-platform.h: already correct")
+          else:
+              errors.append(f"missing {platform_h}")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
