@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.1 修复：stock merge 未覆盖 defconfig 的 MACH_XIAOMI=y → dts Makefile overlay 编译错误
 # v6.0 方案 C — stock 对齐（2026-06-22）:
 #   - 废弃 redwood_bootfix.config（v5 人为关 MACH_XIAOMI/改充电/改 thermal → 与 stock 偏离 → bootloop）
 #   - merge 唯一基准：fork 仓库 configs/redwood_stock.config（设备 /proc/config.gz 6637 行）
@@ -198,6 +199,20 @@ jobs:
           grep -q "^CONFIG_LTO_CLANG=y" "$DST" || { echo "[ERROR] stock config missing LTO_CLANG"; exit 1; }
           echo "[OK] installed redwood_stock.config (${LINES} lines from device /proc/config.gz)"
 
+      - name: Write redwood stock fixup overlay (v6)
+        run: |
+          set -euxo pipefail
+          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock_fixup.config"
+          cat > "$FRAG" <<'EOF'
+          # stock /proc/config.gz 无 MACH_* 行，但 xiaomi-qgki_defconfig 默认 MACH_XIAOMI=y；
+          # 不显式关闭会触发 dts Makefile: Xiaomi DT w/o overlay is undefined!!!
+          # CONFIG_MACH_XIAOMI is not set
+          # CONFIG_MACH_XIAOMI_REDWOOD is not set
+          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
+          EOF
+          sed -i 's/^          //' "$FRAG"
+          echo "[OK] wrote redwood_stock_fixup.config (disable MACH_XIAOMI + DT overlay)"
+
       - name: Write redwood KSU overlay (boot-test)
         if: env.SUSFS_BOOT_TEST == 'true'
         run: |
@@ -214,11 +229,11 @@ jobs:
         run: |
           set -euxo pipefail
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
-            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_ksu.config" >> "$GITHUB_ENV"
-            echo "[OK] merge: stock + ksu overlay (boot-test)"
+            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_ksu.config" >> "$GITHUB_ENV"
+            echo "[OK] merge: stock + fixup + ksu overlay (boot-test)"
           else
-            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config" >> "$GITHUB_ENV"
-            echo "[OK] merge: stock only (phase-2 ReSukiSU adds kernelsu.config via build-ready)"
+            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_stock_fixup.config" >> "$GITHUB_ENV"
+            echo "[OK] merge: stock + fixup (phase-2 ReSukiSU adds kernelsu.config via build-ready)"
           fi
 
       - name: Validate merge config paths
@@ -544,7 +559,47 @@ jobs:
           else:
               errors.append(f"missing {platform_h}")
 
-          # v6: 不再 patch thermal/Kconfig 或 dts Makefile — stock 无 MACH_XIAOMI，MI_THERMAL=m，沿用 stock dtbo 路径
+          # v6: stock fixup 显式关 MACH_XIAOMI；仍 patch dts Makefile 以防 merge 顺序遗漏
+          dt_mk = root / "arch/arm64/boot/dts/vendor/qcom/Makefile"
+          if dt_mk.is_file():
+              text = dt_mk.read_text()
+              orig = text
+              old_block = (
+                  "ifeq ($(CONFIG_MACH_XIAOMI), y)\n"
+                  "ifneq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n"
+                  "$(error Xiaomi DT w/o overlay is undefined!!!)\n"
+                  "endif\n"
+                  "\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_LISA) += lisa-sm7325-overlay.dtbo\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_REDWOOD) += redwood-sm7325-overlay.dtbo\n"
+                  "\n"
+                  "lisa-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "\n"
+                  "else"
+              )
+              new_block = (
+                  "ifeq ($(CONFIG_MACH_XIAOMI), y)\n"
+                  "ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_LISA) += lisa-sm7325-overlay.dtbo\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_REDWOOD) += redwood-sm7325-overlay.dtbo\n"
+                  "\n"
+                  "lisa-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "endif\n"
+                  "\n"
+                  "else"
+              )
+              if old_block in text:
+                  text = text.replace(old_block, new_block, 1)
+                  dt_mk.write_text(text)
+                  print("[+] dts Makefile: allow Xiaomi build without BUILD_ARM64_DT_OVERLAY")
+              elif "Xiaomi DT w/o overlay is undefined" not in text:
+                  print("[=] dts Makefile: Xiaomi overlay guard already patched")
+              else:
+                  errors.append("dts Makefile: cannot patch Xiaomi overlay hard error")
+          else:
+              errors.append(f"missing {dt_mk}")
 
           # Scarlet 把 shrinker_list 的锁重构成 shrinker_rwlock，但 #ifdef CONFIG_MEMCG 块内
           # 操作 shrinker_idr 的代码（prealloc/unregister_memcg_shrinker、shrink_slab_memcg）
