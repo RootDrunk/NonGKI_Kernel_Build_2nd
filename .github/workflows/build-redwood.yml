@@ -125,7 +125,10 @@ jobs:
           rm -rf KernelSU KernelSU-Next
           rm -f arch/${{ env.KERNEL_ARCH }}/configs/vendor/kernelsu.config
           rm -f arch/${{ env.KERNEL_ARCH }}/configs/vendor/*kernelsu*.config
-          git checkout -- drivers/kernelsu
+          # ReSukiSU setup.sh 会把 drivers/kernelsu 换成 symlink/整目录替换；
+          # 必须先 rm 再 checkout，否则 git checkout -- 无法还原 Scarlet 原生树。
+          rm -rf drivers/kernelsu
+          git checkout HEAD -- drivers/kernelsu
           HOOK_FILES=(
             fs/exec.c fs/read_write.c fs/open.c fs/stat.c fs/devpts/inode.c
             fs/namei.c drivers/input/input.c drivers/tty/pty.c
@@ -133,7 +136,7 @@ jobs:
             kernel/reboot.c kernel/sys.c
           )
           for f in "${HOOK_FILES[@]}"; do
-            git checkout -- "$f" 2>/dev/null || true
+            git checkout HEAD -- "$f" 2>/dev/null || true
           done
           DEFCFG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
           sed -i '/^CONFIG_KSU_MANUAL_HOOK=/d' "$DEFCFG" || true
@@ -141,8 +144,21 @@ jobs:
             echo "[ERROR] Scarlet drivers/kernelsu not restored"
             exit 1
           fi
-          if grep -rq "KernelSU-Next\|ReSukiSU" drivers/kernelsu 2>/dev/null; then
-            echo "[ERROR] drivers/kernelsu still looks like ReSukiSU, not Scarlet native"
+          if [ -L drivers/kernelsu ]; then
+            echo "[ERROR] drivers/kernelsu is still a symlink (ReSukiSU not removed)"
+            exit 1
+          fi
+          # 正向校验 Scarlet 原生 hook 符号（勿用 grep ReSukiSU 字符串：ReSukiSU 树残留或误匹配）
+          if ! grep -q 'ksu_hide_setprocattr' security/selinux/hooks.c; then
+            echo "[ERROR] hooks.c missing Scarlet native ksu_hide_setprocattr"
+            exit 1
+          fi
+          if grep -q 'ksu_handle_selinux_setprocattr' security/selinux/hooks.c; then
+            echo "[ERROR] hooks.c still has ReSukiSU ksu_handle_selinux_setprocattr"
+            exit 1
+          fi
+          if ! grep -q 'ksu_sel_write_context' security/selinux/selinuxfs.c; then
+            echo "[ERROR] selinuxfs.c missing Scarlet native ksu_sel_write_context"
             exit 1
           fi
           echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver ~32507, can boot)"
