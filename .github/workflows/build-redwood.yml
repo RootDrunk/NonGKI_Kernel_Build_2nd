@@ -147,12 +147,9 @@ jobs:
           CONFIG_MMC_SDHCI_MSM=y
           CONFIG_MMC_CQHCI=y
 
-          # --- FBE 文件级加密链：缺一项即 /data 解密失败 → bootloop（值取自官方 config.gz）---
+          # --- FBE 文件级加密链：redwood 主存储为 UFS，/data 解密走 UFS inline crypto ---
           CONFIG_QTI_CRYPTO_COMMON=y
           CONFIG_QTI_HW_KEY_MANAGER=y
-          CONFIG_MMC_CRYPTO=y
-          CONFIG_MMC_CQHCI_CRYPTO=y
-          CONFIG_MMC_CQHCI_CRYPTO_QTI=y
           CONFIG_SCSI_UFS_CRYPTO=y
           CONFIG_SCSI_UFS_CRYPTO_QTI=y
           CONFIG_BLK_INLINE_ENCRYPTION=y
@@ -161,6 +158,13 @@ jobs:
           CONFIG_FS_ENCRYPTION=y
           CONFIG_FS_ENCRYPTION_ALGS=y
           CONFIG_FS_ENCRYPTION_INLINE_CRYPT=y
+          # MMC inline crypto：该树 block 层已是新 blk_keyslot_manager API，但 drivers/mmc 的
+          #   crypto 驱动仍用旧 keyslot_manager API（keyslot_manager_create/bc_keyslot/
+          #   key->data_unit_size 等），新旧不兼容无法编译。redwood 用 UFS，MMC crypto 仅作用于
+          #   SD 卡，对 /data 解密与开机非必需 → 关闭以避开编译错误。
+          # CONFIG_MMC_CRYPTO is not set
+          # CONFIG_MMC_CQHCI_CRYPTO is not set
+          # CONFIG_MMC_CQHCI_CRYPTO_QTI is not set
 
           # --- cgroup / 计账：crDroid userspace init 必需 ---
           CONFIG_MEMCG=y
