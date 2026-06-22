@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.16 修复：v6.0.15 启用 RMNET_IPA3 后 rmnet_ctl_ipa.o 已有 ipa3_* → 去掉 shim 里重复别名
 # v6.0.15 修复：fixup 关 ARCH_LAHAINA → dataipa GSI 块未生效 → IPA3=y 缺 gsi_*（为 ARCH_YUPIK 补 dataipa.h + CONFIG_GSI）
 # v6.0.14 修复：lpm-levels.c 面板 defer 补丁锚点（Scarlet 源码 `\t\treturn -EPROBE_DEFER` 双 tab）
 # v6.0.13 修复：vmlinux 链接 undefined symbol（QCA_CLD_WLAN 残留 + IPA3 rmnet 别名 + display/lpm 桩）
@@ -1340,39 +1341,15 @@ jobs:
           else:
               errors.append(f"missing {ddebug}")
 
-          # v6.0.13: vmlinux link shims — IPA3 rmnet aliases + display stubs (techpack display not in vmlinux)
+          # v6.0.13+: display stubs only (ipa3_* 由 RMNET_IPA3/rmnet_ctl_ipa.o 提供，勿重复 shim)
           link_shim_marker = "redwood-vmlinux-link-shims"
           link_shim_c = root / "drivers/soc/qcom/redwood_vmlinux_link_shims.c"
           link_shim_body = "\n".join([
               "// SPDX-License-Identifier: GPL-2.0",
-              f"/* {link_shim_marker}: stock GKI 对齐 — display/WiFi 多在 vendor_dlkm，链入 vmlinux 的内核子系统需桩/别名 */",
+              f"/* {link_shim_marker}: display 在 vendor_dlkm，vmlinux 内 GPU/cpuidle 需 dsi/get_panel 桩 */",
               "",
               "#include <linux/export.h>",
-              "#include <linux/skbuff.h>",
-              "#include <linux/ipa.h>",
               "#include <drm/drm_panel.h>",
-              "",
-              "int ipa3_register_rmnet_ctl_cb(",
-              "\tvoid (*ready_cb)(void *user_data1), void *user_data1,",
-              "\tvoid (*stop_cb)(void *user_data2), void *user_data2,",
-              "\tvoid (*rx_cb)(void *user_data3, void *rx_data), void *user_data3)",
-              "{",
-              "\treturn ipa_register_rmnet_ctl_cb(ready_cb, user_data1, stop_cb,",
-              "\t\t\t\t\t\t user_data2, rx_cb, user_data3);",
-              "}",
-              "EXPORT_SYMBOL(ipa3_register_rmnet_ctl_cb);",
-              "",
-              "int ipa3_unregister_rmnet_ctl_cb(void)",
-              "{",
-              "\treturn ipa_unregister_rmnet_ctl_cb();",
-              "}",
-              "EXPORT_SYMBOL(ipa3_unregister_rmnet_ctl_cb);",
-              "",
-              "int ipa3_rmnet_ctl_xmit(struct sk_buff *skb)",
-              "{",
-              "\treturn ipa_rmnet_ctl_xmit(skb);",
-              "}",
-              "EXPORT_SYMBOL(ipa3_rmnet_ctl_xmit);",
               "",
               "unsigned int dsi_panel_get_refresh_rate(void)",
               "{",
@@ -1387,11 +1364,22 @@ jobs:
               "EXPORT_SYMBOL(get_panel);",
               "",
           ])
-          if link_shim_c.is_file() and link_shim_marker in link_shim_c.read_text():
-              print("[=] redwood_vmlinux_link_shims.c: already present")
+          if link_shim_c.is_file():
+              existing = link_shim_c.read_text()
+              if existing == link_shim_body:
+                  print("[=] redwood_vmlinux_link_shims.c: display stubs already correct")
+              elif "ipa3_register_rmnet_ctl_cb" in existing:
+                  link_shim_c.write_text(link_shim_body)
+                  print(
+                      "[+] redwood_vmlinux_link_shims.c: removed IPA3 aliases "
+                      "(RMNET_IPA3 rmnet_ctl_ipa.o defines ipa3_*)"
+                  )
+              else:
+                  link_shim_c.write_text(link_shim_body)
+                  print("[+] redwood_vmlinux_link_shims.c: refreshed display-only stubs")
           else:
               link_shim_c.write_text(link_shim_body)
-              print("[+] redwood_vmlinux_link_shims.c: IPA3 rmnet aliases + display stubs")
+              print("[+] redwood_vmlinux_link_shims.c: display stubs (dsi_panel_get_refresh_rate/get_panel)")
 
           qcom_mk = root / "drivers/soc/qcom/Makefile"
           if qcom_mk.is_file():
