@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.11 修复：msm_performance.c 缺 linux/sched/core_ctl.h（Scarlet 5.4 无 core_ctl）→ include 守卫 + 关 MSM_PERFORMANCE_QGKI
 # v6.0.10 触发：push 改 yml/config 自动编译（免找 Run workflow 按钮）
 # v6.0.9 修复：MMC CQHCI crypto 对齐 Scarlet 5.4 blk_keyslot_manager（参考 ufshcd-crypto-qti）+ ipa_i.h wakelock #ifdef 倒置
 # v6.0.8 修复：zram writeback 用 bio_set_dev（Scarlet 5.4 无 bi_bdev 字段）+ 兼容 v6.0.7 已打补丁树
@@ -247,6 +248,9 @@ jobs:
           #
           # ipa_i.h: ipa3_wakelock_ref_cnt 定义在 #ifdef CONFIG_DISABLE_IPA_WAKELOCKS，字段却在 #ifndef 内
           CONFIG_DISABLE_IPA_WAKELOCKS=y
+          #
+          # Scarlet 5.4 无 core_ctl 子系统；msm_performance QGKI 路径依赖 linux/sched/core_ctl.h
+          # CONFIG_MSM_PERFORMANCE_QGKI is not set
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
@@ -1259,6 +1263,32 @@ jobs:
           else:
               errors.append(f"missing {qti_c}")
 
+          msm_perf = root / "drivers/soc/qcom/msm_performance.c"
+          core_ctl_marker = "redwood-core-ctl-include-guard"
+          if msm_perf.is_file():
+              text = msm_perf.read_text()
+              if core_ctl_marker in text:
+                  print("[=] msm_performance.c: core_ctl include guard already patched")
+              else:
+                  core_ctl_inc = "#include <linux/sched/core_ctl.h>"
+                  if core_ctl_inc not in text:
+                      errors.append("msm_performance.c: core_ctl include not found")
+                  else:
+                      text = text.replace(
+                          core_ctl_inc,
+                          "#ifdef CONFIG_MSM_PERFORMANCE_QGKI\n"
+                          f"{core_ctl_inc}\n"
+                          f"#endif /* {core_ctl_marker} */",
+                          1,
+                      )
+                      msm_perf.write_text(text)
+                      print(
+                          "[+] msm_performance.c: guard core_ctl.h include "
+                          "(Scarlet 5.4 missing linux/sched/core_ctl.h)"
+                      )
+          else:
+              errors.append(f"missing {msm_perf}")
+
           if errors:
               print("!! redwood compile fixes FAILED:")
               for e in errors:
@@ -1312,6 +1342,7 @@ jobs:
           grep -q "^CONFIG_TASK_DELAY_ACCT=y" "$CFG" && fail "TASK_DELAY_ACCT must be disabled (fixup: trace_sched_stat compile)"
           grep -q "^CONFIG_FTRACE=y" "$CFG" && fail "FTRACE must be disabled (fixup: trace_sched_stat compile)"
           grep -q "^CONFIG_SCHEDSTATS=y" "$CFG" && fail "SCHEDSTATS must be disabled (fixup: FTRACE off → trace_sched_stat_* undeclared in stats.h:60)"
+          grep -q "^CONFIG_MSM_PERFORMANCE_QGKI=y" "$CFG" && fail "MSM_PERFORMANCE_QGKI must be disabled (fixup: Scarlet 5.4 has no core_ctl)"
           grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (stock # CONFIG_QTI_BATTERY_CHARGER is not set)"
           grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop)"
           grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
