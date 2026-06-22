@@ -915,64 +915,65 @@ jobs:
           # Scarlet MMC CQHCI crypto 源码沿用 upstream keyslot_manager API，但 5.4 block 层只有 blk_keyslot_manager
           mmc_marker = "/* redwood: Scarlet 5.4 blk_keyslot_manager MMC crypto shim */"
           shim_h = root / "drivers/mmc/host/cqhci-blk-ksm-shim.h"
-          shim_body = """\
-/* SPDX-License-Identifier: GPL-2.0 */
-#ifndef CQHCI_BLK_KSM_SHIM_H
-#define CQHCI_BLK_KSM_SHIM_H
-
-#include <linux/crypto-qti-common.h>
-#include <linux/keyslot-manager.h>
-#include "cqhci.h"
-
-struct cqhci_ksm_ctx {
-\tstruct blk_keyslot_manager ksm;
-\tstruct cqhci_host *host;
-};
-
-static inline struct cqhci_host *cqhci_ksm_host(struct blk_keyslot_manager *ksm)
-{
-\treturn container_of(ksm, struct cqhci_ksm_ctx, ksm)->host;
-}
-
-static inline struct blk_keyslot_manager *
-cqhci_blk_ksm_create(struct device *dev, unsigned int num_slots,
-\t\t     const struct blk_ksm_ll_ops *ops,
-\t\t     unsigned int features,
-\t\t     unsigned int crypto_modes_supported[BLK_ENCRYPTION_MODE_MAX],
-\t\t     struct cqhci_host *host)
-{
-\tstruct cqhci_ksm_ctx *ctx;
-\tunsigned int i;
-\tint err;
-
-\tctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-\tif (!ctx)
-\t\treturn NULL;
-
-\tctx->host = host;
-\tctx->ksm.ksm_ll_ops = *ops;
-\tctx->ksm.features = features;
-\tctx->ksm.dev = dev;
-\tctx->ksm.max_dun_bytes_supported = sizeof(u64);
-\tfor (i = 0; i < BLK_ENCRYPTION_MODE_MAX; i++)
-\t\tctx->ksm.crypto_modes_supported[i] = crypto_modes_supported[i];
-
-\terr = devm_blk_ksm_init(dev, &ctx->ksm, num_slots);
-\tif (err)
-\t\treturn NULL;
-
-\treturn &ctx->ksm;
-}
-
-static inline void cqhci_get_ice_mmio_data(struct ice_mmio_data *data,
-\t\t\t\t\t   struct cqhci_host *host)
-{
-\tmemset(data, 0, sizeof(*data));
-\tdata->ice_base_mmio = host->icemmio;
-}
-
-#endif /* CQHCI_BLK_KSM_SHIM_H */
-"""
+          shim_body = "\n".join([
+              "/* SPDX-License-Identifier: GPL-2.0 */",
+              "#ifndef CQHCI_BLK_KSM_SHIM_H",
+              "#define CQHCI_BLK_KSM_SHIM_H",
+              "",
+              "#include <linux/crypto-qti-common.h>",
+              "#include <linux/keyslot-manager.h>",
+              '#include "cqhci.h"',
+              "",
+              "struct cqhci_ksm_ctx {",
+              "\tstruct blk_keyslot_manager ksm;",
+              "\tstruct cqhci_host *host;",
+              "};",
+              "",
+              "static inline struct cqhci_host *cqhci_ksm_host(struct blk_keyslot_manager *ksm)",
+              "{",
+              "\treturn container_of(ksm, struct cqhci_ksm_ctx, ksm)->host;",
+              "}",
+              "",
+              "static inline struct blk_keyslot_manager *",
+              "cqhci_blk_ksm_create(struct device *dev, unsigned int num_slots,",
+              "\t\t     const struct blk_ksm_ll_ops *ops,",
+              "\t\t     unsigned int features,",
+              "\t\t     unsigned int crypto_modes_supported[BLK_ENCRYPTION_MODE_MAX],",
+              "\t\t     struct cqhci_host *host)",
+              "{",
+              "\tstruct cqhci_ksm_ctx *ctx;",
+              "\tunsigned int i;",
+              "\tint err;",
+              "",
+              "\tctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);",
+              "\tif (!ctx)",
+              "\t\treturn NULL;",
+              "",
+              "\tctx->host = host;",
+              "\tctx->ksm.ksm_ll_ops = *ops;",
+              "\tctx->ksm.features = features;",
+              "\tctx->ksm.dev = dev;",
+              "\tctx->ksm.max_dun_bytes_supported = sizeof(u64);",
+              "\tfor (i = 0; i < BLK_ENCRYPTION_MODE_MAX; i++)",
+              "\t\tctx->ksm.crypto_modes_supported[i] = crypto_modes_supported[i];",
+              "",
+              "\terr = devm_blk_ksm_init(dev, &ctx->ksm, num_slots);",
+              "\tif (err)",
+              "\t\treturn NULL;",
+              "",
+              "\treturn &ctx->ksm;",
+              "}",
+              "",
+              "static inline void cqhci_get_ice_mmio_data(struct ice_mmio_data *data,",
+              "\t\t\t\t\t   struct cqhci_host *host)",
+              "{",
+              "\tmemset(data, 0, sizeof(*data));",
+              "\tdata->ice_base_mmio = host->icemmio;",
+              "}",
+              "",
+              "#endif /* CQHCI_BLK_KSM_SHIM_H */",
+              "",
+          ])
           if shim_h.is_file() and mmc_marker in shim_h.read_text():
               print("[=] cqhci-blk-ksm-shim.h: already present")
           else:
@@ -1025,53 +1026,53 @@ static inline void cqhci_get_ice_mmio_data(struct ice_mmio_data *data,
               if "blk_ksm_get_slot_idx(req->crypt_keyslot)" in text:
                   print("[=] mmc/core/crypto.c: blk_ksm API already patched")
               else:
-                  mmc_core_crypto.write_text(
-                      """\
-// SPDX-License-Identifier: GPL-2.0
-/*
- * Copyright 2020 Google LLC
- */
-
-#include <linux/blk-crypto.h>
-#include <linux/blkdev.h>
-#include <linux/keyslot-manager.h>
-#include <linux/mmc/host.h>
-
-#include "core.h"
-#include "queue.h"
-
-void mmc_crypto_setup_queue(struct mmc_host *host, struct request_queue *q)
-{
-\tif (host->caps2 & MMC_CAP2_CRYPTO)
-\t\tq->ksm = host->ksm;
-}
-EXPORT_SYMBOL_GPL(mmc_crypto_setup_queue);
-
-void mmc_crypto_free_host(struct mmc_host *host)
-{
-\tblk_ksm_destroy(host->ksm);
-}
-
-void mmc_crypto_prepare_req(struct mmc_queue_req *mqrq)
-{
-\tstruct request *req = mmc_queue_req_to_req(mqrq);
-\tstruct mmc_request *mrq = &mqrq->brq.mrq;
-\tconst struct bio_crypt_ctx *bc;
-
-\tif (!bio_has_crypt_ctx(req->bio))
-\t\treturn;
-
-\tbc = req->bio->bi_crypt_context;
-\tif (!req->crypt_keyslot)
-\t\treturn;
-
-\tmrq->crypto_key_slot = blk_ksm_get_slot_idx(req->crypt_keyslot);
-\tmrq->data_unit_num = bc->bc_dun[0];
-\tmrq->crypto_key = bc->bc_key;
-}
-EXPORT_SYMBOL_GPL(mmc_crypto_prepare_req);
-"""
-                  )
+                  mmc_core_body = "\n".join([
+                      "// SPDX-License-Identifier: GPL-2.0",
+                      "/*",
+                      " * Copyright 2020 Google LLC",
+                      " */",
+                      "",
+                      "#include <linux/blk-crypto.h>",
+                      "#include <linux/blkdev.h>",
+                      "#include <linux/keyslot-manager.h>",
+                      "#include <linux/mmc/host.h>",
+                      "",
+                      '#include "core.h"',
+                      '#include "queue.h"',
+                      "",
+                      "void mmc_crypto_setup_queue(struct mmc_host *host, struct request_queue *q)",
+                      "{",
+                      "\tif (host->caps2 & MMC_CAP2_CRYPTO)",
+                      "\t\tq->ksm = host->ksm;",
+                      "}",
+                      "EXPORT_SYMBOL_GPL(mmc_crypto_setup_queue);",
+                      "",
+                      "void mmc_crypto_free_host(struct mmc_host *host)",
+                      "{",
+                      "\tblk_ksm_destroy(host->ksm);",
+                      "}",
+                      "",
+                      "void mmc_crypto_prepare_req(struct mmc_queue_req *mqrq)",
+                      "{",
+                      "\tstruct request *req = mmc_queue_req_to_req(mqrq);",
+                      "\tstruct mmc_request *mrq = &mqrq->brq.mrq;",
+                      "\tconst struct bio_crypt_ctx *bc;",
+                      "",
+                      "\tif (!bio_has_crypt_ctx(req->bio))",
+                      "\t\treturn;",
+                      "",
+                      "\tbc = req->bio->bi_crypt_context;",
+                      "\tif (!req->crypt_keyslot)",
+                      "\t\treturn;",
+                      "",
+                      "\tmrq->crypto_key_slot = blk_ksm_get_slot_idx(req->crypt_keyslot);",
+                      "\tmrq->data_unit_num = bc->bc_dun[0];",
+                      "\tmrq->crypto_key = bc->bc_key;",
+                      "}",
+                      "EXPORT_SYMBOL_GPL(mmc_crypto_prepare_req);",
+                      "",
+                  ])
+                  mmc_core_crypto.write_text(mmc_core_body)
                   print("[+] mmc/core/crypto.c: adapted to Scarlet 5.4 blk-crypto + blk_ksm")
           else:
               errors.append(f"missing {mmc_core_crypto}")
