@@ -3,19 +3,14 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
-# v5.8 变更摘要（2026-06-22）:
-#   - AnyKernel3：写入极简 anykernel.sh，删除 tuna/Galaxy Nexus 模板补丁
-#   - boot-test 强制只打包 Image（禁止 Image.gz-dtb/dtbo）
-#   - boot-test 校验 CONFIG_KSU=y；满血版 CONFIG_KSU_SUSFS 缺失直接 fail
-#   - ksuver 文档更正为 Scarlet 原生 32486
-#   - Image.gz 大小阈值单独放宽（12MB），避免误杀
-# v5.7 变更摘要:
-#   - 不再 merge redwood.config（BQ2597X_BATTERY_CHARGER + 无 MACH_XIAOMI → qti_battery_charger 编译失败）
-#   - bootfix 对齐 stock：# CONFIG_QTI_BATTERY_CHARGER is not set（充电走 ODIN 模块路径）
-#   - 保留 v5.6：MACH_XIAOMI 关、MI_THERMAL、overlay 关、do.systemless=0
-#   - boot-test: build-ready 拉 ReSukiSU 后 Restore 还原 Scarlet 原生 KSU（ksuver 32486）
-#     （切勿设 KERNELSU_AUTO_GET=false：会走 MANUAL 分支 curl 空 URL → malformed）
-#   - 编译后校验 .config + AnyKernel3 zip 完整性
+# v6.0 方案 C — stock 对齐（2026-06-22）:
+#   - 废弃 redwood_bootfix.config（v5 人为关 MACH_XIAOMI/改充电/改 thermal → 与 stock 偏离 → bootloop）
+#   - merge 唯一基准：fork 仓库 configs/redwood_stock.config（设备 /proc/config.gz 6637 行）
+#   - boot-test 仅叠加 vendor/redwood_ksu.config（CONFIG_KSU=y）+ Restore Scarlet 原生 KSU(32486)
+#   - 保留 v5.8：极简 anykernel、boot-test 只 pack Image、.config/zip 校验、上传 .config 调试产物
+#   - 阶段2：SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true → ReSukiSU + SUSFS（仍基于 stock merge）
+# fork 需两个文件：.github/workflows/build-redwood.yml + configs/redwood_stock.config
+# 部署清单：configs/DEPLOY-v6.md
 
 on:
   workflow_call:
@@ -98,7 +93,8 @@ env:
   SKIP_PATCH: "true"
 
   BUILD_OTHER_CONFIG: "true"
-  MERGE_CONFIG_FILES: "vendor/redwood_bootfix.config"
+  # 运行时由 "Configure merge config paths" 写入；默认仅 stock
+  MERGE_CONFIG_FILES: "vendor/redwood_stock.config"
 
   FREE_MORE_SPACE: "false"
 
@@ -170,94 +166,47 @@ jobs:
           fi
           echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver 32486)"
 
-      - name: Write redwood bootfix fragment
+      - name: Install redwood stock config (v6)
         run: |
           set -euxo pipefail
-          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_bootfix.config"
+          SRC="$GITHUB_WORKSPACE/configs/redwood_stock.config"
+          if [[ ! -f "$SRC" ]]; then
+            echo "[ERROR] missing configs/redwood_stock.config in fork repo"
+            echo "  Copy from: autonomous-agent/android/kernel-build/configs/redwood_stock.config"
+            echo "  To fork:   configs/redwood_stock.config (repo root, NOT under .github/)"
+            exit 1
+          fi
+          DST="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock.config"
+          cp -fp "$SRC" "$DST"
+          LINES=$(wc -l < "$DST")
+          [[ "$LINES" -gt 5000 ]] || { echo "[ERROR] stock config too short (${LINES} lines)"; exit 1; }
+          grep -q "^CONFIG_ARCH_YUPIK=y" "$DST" || { echo "[ERROR] stock config missing ARCH_YUPIK"; exit 1; }
+          grep -q "^CONFIG_PINCTRL_REDWOOD=y" "$DST" || { echo "[ERROR] stock config missing PINCTRL_REDWOOD"; exit 1; }
+          grep -q "^CONFIG_LTO_CLANG=y" "$DST" || { echo "[ERROR] stock config missing LTO_CLANG"; exit 1; }
+          echo "[OK] installed redwood_stock.config (${LINES} lines from device /proc/config.gz)"
+
+      - name: Write redwood KSU overlay (boot-test)
+        if: env.SUSFS_BOOT_TEST == 'true'
+        run: |
+          set -euxo pipefail
+          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_ksu.config"
           cat > "$FRAG" <<'EOF'
-          # redwood bootfix v7: 不 merge redwood.config（v6 引入 qti_battery_charger 编译错误）
-          # redwood.config 开 BQ2597X_BATTERY_CHARGER=y，但 bootfix 关 MACH_XIAOMI →
-          #   qti_battery_charger.c 中 BQ_FUEL_GAUGE 块引用 get_hw_id_value/PSY_TYPE_XM 等 MACH 符号 → 12 errors。
-          # stock：# CONFIG_QTI_BATTERY_CHARGER is not set，充电由 QTI_BATTERY_CHARGER_ODIN 模块提供。
-          # 101618 bootloop：MACH_XIAOMI=y；090632：overlay=y + redwood.config 禁 MMC。
-
-          # --- 存储栈（redwood.config 错误地禁用了 MMC）---
-          CONFIG_MMC=y
-          CONFIG_MMC_BLOCK=y
-          CONFIG_MMC_SDHCI=y
-          CONFIG_MMC_SDHCI_MSM=y
-          CONFIG_MMC_CQHCI=y
-
-          # --- FBE 文件级加密链：redwood 主存储为 UFS，/data 解密走 UFS inline crypto ---
-          CONFIG_QTI_CRYPTO_COMMON=y
-          CONFIG_QTI_HW_KEY_MANAGER=y
-          CONFIG_SCSI_UFS_CRYPTO=y
-          CONFIG_SCSI_UFS_CRYPTO_QTI=y
-          CONFIG_BLK_INLINE_ENCRYPTION=y
-          CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK=y
-          CONFIG_DM_DEFAULT_KEY=y
-          CONFIG_FS_ENCRYPTION=y
-          CONFIG_FS_ENCRYPTION_ALGS=y
-          CONFIG_FS_ENCRYPTION_INLINE_CRYPT=y
-          # MMC inline crypto：该树 block 层已是新 blk_keyslot_manager API，但 drivers/mmc 的
-          #   crypto 驱动仍用旧 keyslot_manager API（keyslot_manager_create/bc_keyslot/
-          #   key->data_unit_size 等），新旧不兼容无法编译。redwood 用 UFS，MMC crypto 仅作用于
-          #   SD 卡，对 /data 解密与开机非必需 → 关闭以避开编译错误。
-          # CONFIG_MMC_CRYPTO is not set
-          # CONFIG_MMC_CQHCI_CRYPTO is not set
-          # CONFIG_MMC_CQHCI_CRYPTO_QTI is not set
-
-          # --- cgroup / 计账：crDroid userspace init 必需 ---
-          CONFIG_MEMCG=y
-          CONFIG_MEMCG_SWAP=y
-          CONFIG_MEMCG_SWAP_ENABLED=y
-          CONFIG_MEMCG_KMEM=y
-          CONFIG_TASK_DELAY_ACCT=y
-          CONFIG_FTRACE=y
-
-          # --- 模块支持：对齐 stock（MODULES=y/MODVERSIONS=y，但实际为单体内核 0 个 .ko）---
-          CONFIG_MODULES=y
-          CONFIG_MODVERSIONS=y
-          CONFIG_ASM_MODVERSIONS=y
-          CONFIG_MODULES_USE_ELF_RELA=y
-
-          # --- LTO + CFI + SCS：必须整组对齐 stock，否则卡 Redmi logo ---
-          # 实测设备 0 个 vendor .ko（单体内核），bootloop 与"模块 ABI"无关。
-          # 真正根因：CFI_CLANG 依赖 LTO_CLANG。v2 强制 LTO_NONE → CFI 被连带关闭 →
-          #   与 Scarlet 源码（CFI 注解、原生 KSU 均按 CFI 编译）不一致 → 早期 panic。
-          # stock 用 THINLTO（非 full LTO）：full LTO 在 Actions 上极慢/OOM，必须用 thin。
-          CONFIG_LTO=y
-          # CONFIG_LTO_NONE is not set
-          CONFIG_LTO_CLANG=y
-          CONFIG_THINLTO=y
-          CONFIG_CFI_CLANG=y
-          CONFIG_CFI_CLANG_SHADOW=y
-          # CONFIG_CFI_PERMISSIVE is not set
-          CONFIG_SHADOW_CALL_STACK=y
-          CONFIG_SHADOW_CALL_STACK_VMAP=y
-
-          # --- 充电：对齐 stock /proc/config.gz（禁 built-in QTI_BATTERY_CHARGER）---
-          # xiaomi-qgki_defconfig 默认 CONFIG_QTI_BATTERY_CHARGER=y，与 MACH_XIAOMI 关不兼容。
-          # CONFIG_QTI_BATTERY_CHARGER is not set
-          # CONFIG_BQ2597X_BATTERY_CHARGER is not set
-
-          # --- 对齐 stock 平台标识（/proc/config.gz 无 MACH_*，有 ARCH_YUPIK/PINCTRL_REDWOOD）---
-          # CONFIG_MACH_XIAOMI is not set
-          # CONFIG_MACH_XIAOMI_REDWOOD is not set
-          # CONFIG_GOODIX_FINGERPRINT is not set
-          # CONFIG_XIAOMI_FINGERPRINT is not set
-
-          # --- get_panel：lpm-levels.c + CONFIG_DRM_PANEL=y 需要此符号 ---
-          # 定义于 mi_thermal_interface.c；Kconfig 原依赖 MACH_XIAOMI → 由 python 补丁去掉依赖。
-          CONFIG_MI_THERMAL_INTERFACE=y
-
-          # --- 对齐 stock dtbo 路径（boot-test 只 sideload Image，沿用 stock dtbo）---
-          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
-          # CONFIG_QCOM_FSA4480_I2C is not set
-          # CONFIG_TMPFS_XATTR is not set
+          # v6 boot-test: 在 stock 基准上仅启用 Scarlet 原生 KernelSU
+          CONFIG_KSU=y
           EOF
           sed -i 's/^          //' "$FRAG"
-          echo "[OK] wrote $(wc -l < "$FRAG") lines to redwood_bootfix.config"
+          echo "[OK] wrote redwood_ksu.config (CONFIG_KSU=y only)"
+
+      - name: Configure merge config paths (v6)
+        run: |
+          set -euxo pipefail
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_ksu.config" >> "$GITHUB_ENV"
+            echo "[OK] merge: stock + ksu overlay (boot-test)"
+          else
+            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config" >> "$GITHUB_ENV"
+            echo "[OK] merge: stock only (phase-2 ReSukiSU adds kernelsu.config via build-ready)"
+          fi
 
       - name: Validate merge config paths
         run: |
@@ -283,7 +232,7 @@ jobs:
 
       - name: Extra Kernel Options
         run: |
-          echo "[OK] config via vendor/redwood_bootfix.config only (v7)"
+          echo "[OK] v6 stock-aligned: merge vendor/redwood_stock.config (+ redwood_ksu.config boot-test)"
 
       - name: Patch Kernel of Re:Kernel
         if: env.SUSFS_BOOT_TEST != 'true'
@@ -582,68 +531,7 @@ jobs:
           else:
               errors.append(f"missing {platform_h}")
 
-          # MI_THERMAL_INTERFACE 原 Kconfig 依赖 MACH_XIAOMI；bootfix 对齐 stock 关闭 MACH_* 后
-          # 必须去掉该依赖，否则 MI_THERMAL 无法 built-in → lpm_probe 链接缺 get_panel。
-          kcfg = root / "drivers/thermal/Kconfig"
-          if kcfg.is_file():
-              text = kcfg.read_text()
-              orig = text
-              text = text.replace(
-                  "depends on THERMAL && QGKI && MACH_XIAOMI",
-                  "depends on THERMAL && QGKI",
-              )
-              if text != orig:
-                  kcfg.write_text(text)
-                  print("[+] thermal/Kconfig: MI_THERMAL no longer requires MACH_XIAOMI")
-              elif "depends on THERMAL && QGKI && MACH_XIAOMI" not in orig:
-                  print("[=] thermal/Kconfig: MACH_XIAOMI dep already removed")
-              else:
-                  errors.append("thermal/Kconfig: failed to patch MI_THERMAL depends")
-          else:
-              errors.append(f"missing {kcfg}")
-
-          # stock 关闭 BUILD_ARM64_DT_OVERLAY，但 Scarlet dts Makefile 对 MACH_XIAOMI 强制 overlay；
-          # 去掉 hard error，仅在 overlay=y 时编译 dtbo（boot-test 不刷自编译 dtbo，沿用 stock dtbo）。
-          dt_mk = root / "arch/arm64/boot/dts/vendor/qcom/Makefile"
-          if dt_mk.is_file():
-              text = dt_mk.read_text()
-              orig = text
-              old_block = (
-                  "ifeq ($(CONFIG_MACH_XIAOMI), y)\n"
-                  "ifneq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n"
-                  "$(error Xiaomi DT w/o overlay is undefined!!!)\n"
-                  "endif\n"
-                  "\n"
-                  "dtbo-$(CONFIG_MACH_XIAOMI_LISA) += lisa-sm7325-overlay.dtbo\n"
-                  "dtbo-$(CONFIG_MACH_XIAOMI_REDWOOD) += redwood-sm7325-overlay.dtbo\n"
-                  "\n"
-                  "lisa-sm7325-overlay.dtbo-base := yupik.dtb\n"
-                  "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
-                  "\n"
-                  "else"
-              )
-              new_block = (
-                  "ifeq ($(CONFIG_MACH_XIAOMI), y)\n"
-                  "ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n"
-                  "dtbo-$(CONFIG_MACH_XIAOMI_LISA) += lisa-sm7325-overlay.dtbo\n"
-                  "dtbo-$(CONFIG_MACH_XIAOMI_REDWOOD) += redwood-sm7325-overlay.dtbo\n"
-                  "\n"
-                  "lisa-sm7325-overlay.dtbo-base := yupik.dtb\n"
-                  "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
-                  "endif\n"
-                  "\n"
-                  "else"
-              )
-              if old_block in text:
-                  text = text.replace(old_block, new_block, 1)
-                  dt_mk.write_text(text)
-                  print("[+] dts Makefile: allow Xiaomi build without BUILD_ARM64_DT_OVERLAY")
-              elif "Xiaomi DT w/o overlay is undefined" not in text:
-                  print("[=] dts Makefile: Xiaomi overlay guard already patched")
-              else:
-                  errors.append("dts Makefile: cannot patch Xiaomi overlay hard error")
-          else:
-              errors.append(f"missing {dt_mk}")
+          # v6: 不再 patch thermal/Kconfig 或 dts Makefile — stock 无 MACH_XIAOMI，MI_THERMAL=m，沿用 stock dtbo 路径
 
           # Scarlet 把 shrinker_list 的锁重构成 shrinker_rwlock，但 #ifdef CONFIG_MEMCG 块内
           # 操作 shrinker_idr 的代码（prealloc/unregister_memcg_shrinker、shrink_slab_memcg）
@@ -695,6 +583,8 @@ jobs:
           echo "[i] using config: $CFG"
           fail() { echo "[CONFIG FAIL] $1"; exit 1; }
           must() { grep -q "^${1}$" "$CFG" || fail "missing ${1}"; }
+          LINES=$(wc -l < "$CFG")
+          [[ "$LINES" -gt 5000 ]] || fail ".config too short (${LINES} lines) — stock merge failed?"
           must "CONFIG_LTO_CLANG=y"
           must "CONFIG_THINLTO=y"
           must "CONFIG_CFI_CLANG=y"
@@ -707,26 +597,27 @@ jobs:
           must "CONFIG_QTI_HW_KEY_MANAGER=y"
           must "CONFIG_SCSI_UFS_CRYPTO=y"
           must "CONFIG_SCSI_UFS_CRYPTO_QTI=y"
-          grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop on redwood)"
-          grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
-          grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (match stock dtbo path)"
-          grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set (101618 bootloop: conflicts with stock dtbo)"
+          must "CONFIG_ARCH_YUPIK=y"
+          must "CONFIG_PINCTRL_REDWOOD=y"
+          must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
+          grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (stock dtbo path)"
+          grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set (stock uses ARCH_YUPIK/PINCTRL_REDWOOD; 101618 bootloop)"
           grep -q "^CONFIG_MACH_XIAOMI_REDWOOD=y" "$CFG" && fail "MACH_XIAOMI_REDWOOD must not be set"
-          grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (MACH_XIAOMI off breaks qti_battery_charger.c)"
-          grep -q "^CONFIG_BQ2597X_BATTERY_CHARGER=y" "$CFG" && fail "BQ2597X_BATTERY_CHARGER must not be set without MACH_XIAOMI"
-          must "CONFIG_MI_THERMAL_INTERFACE=y"
-          grep -q "^CONFIG_BUILD_ARM64_DT_OVERLAY=y" "$CFG" && fail "BUILD_ARM64_DT_OVERLAY must not be enabled"
-          grep -q "^# CONFIG_MMC is not set" "$CFG" && fail "MMC must stay enabled (redwood.config disables it — bootfix must override)"
-          grep -q "^# CONFIG_MMC_CRYPTO is not set" "$CFG" || fail "MMC_CRYPTO must stay disabled (5.4 compile API mismatch; UFS FBE unaffected)"
+          grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (stock # CONFIG_QTI_BATTERY_CHARGER is not set)"
+          grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop)"
+          grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
+          grep -q "^# CONFIG_MMC is not set" "$CFG" && fail "MMC must stay enabled (stock has CONFIG_MMC=y)"
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
             must "CONFIG_KSU=y"
             grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CFG" && fail "boot-test must not force CONFIG_KSU_MANUAL_HOOK (Scarlet native hooks)"
-            echo "[OK] boot-test .config: CONFIG_KSU=y Scarlet native (ksuver 32486)"
+            echo "[OK] boot-test .config: stock-aligned + CONFIG_KSU=y (ksuver 32486)"
           else
             must "CONFIG_KSU=y"
             must "CONFIG_KSU_SUSFS=y"
+            echo "[OK] phase-2 .config: stock-aligned + ReSukiSU + SUSFS"
           fi
-          echo "[OK] redwood .config verified ($(wc -l < "$CFG") lines)"
+          cp -fp "$CFG" "$GITHUB_WORKSPACE/device_kernel/out/redwood-built.config"
+          echo "[OK] redwood .config verified (${LINES} lines, stock-aligned v6)"
 
       - name: Pack AnyKernel3 (redwood, sideload only)
         run: |
@@ -877,6 +768,13 @@ jobs:
           fi
           echo "[OK] anykernel.sh: minimal redwood script, do.systemless=0"
           echo "[OK] artifact integrity OK: $ZIP (${ZSZ} bytes)"
+
+      - name: Upload kernel .config (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: redwood-kernel-config
+          path: device_kernel/out/redwood-built.config
+          if-no-files-found: error
 
       - name: Upload Artifacts
         uses: ./.github/workflows/upload-files
