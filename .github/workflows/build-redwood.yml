@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.14 修复：lpm-levels.c 面板 defer 补丁锚点（Scarlet 源码 `\t\treturn -EPROBE_DEFER` 双 tab）
 # v6.0.13 修复：vmlinux 链接 undefined symbol（QCA_CLD_WLAN 残留 + IPA3 rmnet 别名 + display/lpm 桩）
 # v6.0.12 修复：dynamic_debug.c proc_create 需 proc_ops（Scarlet proc_fs.h 已迁移，源码仍传 file_operations）
 # v6.0.11 修复：msm_performance.c 缺 linux/sched/core_ctl.h（Scarlet 5.4 无 core_ctl）→ include 守卫 + 关 MSM_PERFORMANCE_QGKI
@@ -1411,46 +1412,32 @@ jobs:
               lpm_text = lpm.read_text()
               if lpm_marker in lpm_text:
                   print("[=] lpm-levels.c: panel defer skip already patched")
+              elif "return -EPROBE_DEFER" not in lpm_text and "if (active_panel) {" in lpm_text:
+                  print("[=] lpm-levels.c: panel defer already removed")
               else:
-                  old_lpm = (
-                      "\tif (!active_panel)\n"
-                      "\treturn -EPROBE_DEFER;\n"
-                      "\n"
-                      "\tret = drm_panel_notifier_register(active_panel, &drm_notifier);"
+                  lpm_block = re.sub(
+                      r"(\tstruct drm_panel \*active_panel = get_panel\(\);\n\n)"
+                      r"\tif \(!active_panel\)\n"
+                      r"\t\treturn -EPROBE_DEFER;\n\n"
+                      r"(\tret = drm_panel_notifier_register\(active_panel, &drm_notifier\);\n"
+                      r"\tif \(ret\)\n"
+                      r'\t\tpr_err\("Failed to register DRM panel notifier, ret=%d\\n", ret\);\n'
+                      r"\telse\n"
+                      r'\t\tpr_info\("Registered DRM panel notifier\\n"\);)',
+                      rf"\1\t/* {lpm_marker}: display in vendor_dlkm; NULL panel must not block cpuidle */\n"
+                      r"\tif (active_panel) {\n"
+                      r"\2\n"
+                      r"\t} else {\n"
+                      r'\t\tpr_info("lpm: no panel in vmlinux, skip DRM notifier\\n");\n'
+                      r"\t}",
+                      lpm_text,
+                      count=1,
                   )
-                  new_lpm = (
-                      f"\t/* {lpm_marker}: display in vendor_dlkm; NULL panel must not block cpuidle */\n"
-                      "\tif (active_panel) {\n"
-                      "\tret = drm_panel_notifier_register(active_panel, &drm_notifier);"
-                  )
-                  if old_lpm not in lpm_text:
-                      if "redwood-lpm-skip-panel-defer" in lpm_text or (
-                          "if (active_panel) {" in lpm_text
-                          and "return -EPROBE_DEFER" not in lpm_text
-                      ):
-                          print("[=] lpm-levels.c: panel defer already removed")
-                      else:
-                          errors.append("lpm-levels.c: panel defer anchor not found")
+                  if lpm_block == lpm_text:
+                      errors.append("lpm-levels.c: panel defer block regex did not match")
                   else:
-                      lpm_text = lpm_text.replace(old_lpm, new_lpm, 1)
-                      old_tail = (
-                          "\telse\n"
-                          "\tpr_info(\"Registered DRM panel notifier\\n\");\n"
-                          "#endif"
-                      )
-                      new_tail = (
-                          "\telse\n"
-                          "\tpr_info(\"Registered DRM panel notifier\\n\");\n"
-                          "\t} else {\n"
-                          "\tpr_info(\"lpm: no panel in vmlinux, skip DRM notifier\\n\");\n"
-                          "\t}\n"
-                          "#endif"
-                      )
-                      if old_tail not in lpm_text:
-                          errors.append("lpm-levels.c: panel notifier tail anchor not found")
-                      else:
-                          lpm.write_text(lpm_text.replace(old_tail, new_tail, 1))
-                          print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
+                      lpm.write_text(lpm_block)
+                      print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
           else:
               errors.append(f"missing {lpm}")
 
