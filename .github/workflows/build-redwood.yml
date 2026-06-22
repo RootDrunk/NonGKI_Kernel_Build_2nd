@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.17 修复：cam_flash 链入 vmlinux 但 stock LEDS_QTI_FLASH=m → qti_flash_led_set_param 链接失败
 # v6.0.16 修复：v6.0.15 启用 RMNET_IPA3 后 rmnet_ctl_ipa.o 已有 ipa3_* → 去掉 shim 里重复别名
 # v6.0.15 修复：fixup 关 ARCH_LAHAINA → dataipa GSI 块未生效 → IPA3=y 缺 gsi_*（为 ARCH_YUPIK 补 dataipa.h + CONFIG_GSI）
 # v6.0.14 修复：lpm-levels.c 面板 defer 补丁锚点（Scarlet 源码 `\t\treturn -EPROBE_DEFER` 双 tab）
@@ -260,6 +261,9 @@ jobs:
           # xiaomi-qgki_defconfig 默认 QCA_CLD_WLAN=y；stock /proc/config.gz 无此行 → merge 后仍 built-in
           # qcacld 内联 icnss_* 但 stock ICNSS2=m → vmlinux 链接 undefined symbol（WiFi 实际在 vendor_dlkm）
           # CONFIG_QCA_CLD_WLAN is not set
+          #
+          # stock LEDS_QTI_FLASH=m；techpack cam_flash 链入 vmlinux 且 IS_ENABLED(LEDS_QTI_FLASH) 调用 qti_flash_led_set_param
+          CONFIG_LEDS_QTI_FLASH=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
@@ -1523,6 +1527,8 @@ jobs:
           grep -q "^CONFIG_MSM_PERFORMANCE_QGKI=y" "$CFG" && fail "MSM_PERFORMANCE_QGKI must be disabled (fixup: Scarlet 5.4 has no core_ctl)"
           grep -q "^CONFIG_QCA_CLD_WLAN=y" "$CFG" && fail "QCA_CLD_WLAN must be disabled (stock WiFi=vendor_dlkm; built-in qcacld + ICNSS2=m → vmlinux link error)"
           grep -q "^# CONFIG_QCA_CLD_WLAN is not set" "$CFG" || fail "QCA_CLD_WLAN must be explicitly disabled in fixup overlay"
+          must "CONFIG_LEDS_QTI_FLASH=y"
+          grep -q "^CONFIG_LEDS_QTI_FLASH=m" "$CFG" && fail "LEDS_QTI_FLASH must be built-in (cam_flash in vmlinux calls qti_flash_led_set_param)"
           grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (stock # CONFIG_QTI_BATTERY_CHARGER is not set)"
           grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop)"
           grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
