@@ -57,7 +57,8 @@ env:
   PACK_METHOD: "Anykernel3"
   PACK_KMODULES: "false"
 
-  KERNELSU_METHOD: "shell"
+  # Scarlet 自带 drivers/kernelsu 目录；用 manual 并在 build-ready 后做校验，避免仍编进旧版 ksuver
+  KERNELSU_METHOD: "manual"
   KERNELSU_SUS_PATCH: "false"
 
   PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches"
@@ -105,6 +106,40 @@ jobs:
 
       - name: Get neccssary tools
         uses: ./.github/workflows/build-ready
+
+      - name: Verify ReSukiSU replaces Scarlet bundled KernelSU
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          KSU_LINK="drivers/kernelsu"
+
+          if [ -d "$KSU_LINK" ] && [ ! -L "$KSU_LINK" ]; then
+            echo "[!] Scarlet still has real directory at $KSU_LINK — removing"
+            rm -rf "$KSU_LINK"
+          fi
+
+          if [ ! -e "$KSU_LINK/core/init.c" ]; then
+            if [ ! -d KernelSU/kernel ]; then
+              echo "[ERROR] KernelSU/kernel missing after build-ready"
+              exit 1
+            fi
+            ln -sfn "$(realpath --relative-to=drivers KernelSU/kernel)" "$KSU_LINK"
+          fi
+
+          ls -la "$KSU_LINK"
+          readlink "$KSU_LINK" || true
+
+          if [ -f "$KSU_LINK/ksu.c" ] && grep -q 'ksuver' "$KSU_LINK/ksu.c"; then
+            echo "[ERROR] still Scarlet bundled KSU (ksu.c + ksuver log format)"
+            exit 1
+          fi
+
+          grep -q 'driver version' "$KSU_LINK/core/init.c" || {
+            echo "[ERROR] $KSU_LINK/core/init.c is not ReSukiSU main"
+            exit 1
+          }
+
+          echo "[OK] drivers/kernelsu points to ReSukiSU (expect dmesg: driver version, not ksuver)"
 
       - name: Write redwood bootfix fragment
         run: |
