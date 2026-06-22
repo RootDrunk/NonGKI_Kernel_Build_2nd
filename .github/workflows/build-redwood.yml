@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.13 修复：vmlinux 链接 undefined symbol（QCA_CLD_WLAN 残留 + IPA3 rmnet 别名 + display/lpm 桩）
 # v6.0.12 修复：dynamic_debug.c proc_create 需 proc_ops（Scarlet proc_fs.h 已迁移，源码仍传 file_operations）
 # v6.0.11 修复：msm_performance.c 缺 linux/sched/core_ctl.h（Scarlet 5.4 无 core_ctl）→ include 守卫 + 关 MSM_PERFORMANCE_QGKI
 # v6.0.10 触发：push 改 yml/config 自动编译（免找 Run workflow 按钮）
@@ -252,6 +253,10 @@ jobs:
           #
           # Scarlet 5.4 无 core_ctl 子系统；msm_performance QGKI 路径依赖 linux/sched/core_ctl.h
           # CONFIG_MSM_PERFORMANCE_QGKI is not set
+          #
+          # xiaomi-qgki_defconfig 默认 QCA_CLD_WLAN=y；stock /proc/config.gz 无此行 → merge 后仍 built-in
+          # qcacld 内联 icnss_* 但 stock ICNSS2=m → vmlinux 链接 undefined symbol（WiFi 实际在 vendor_dlkm）
+          # CONFIG_QCA_CLD_WLAN is not set
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
@@ -1333,6 +1338,122 @@ jobs:
           else:
               errors.append(f"missing {ddebug}")
 
+          # v6.0.13: vmlinux link shims — IPA3 rmnet aliases + display stubs (techpack display not in vmlinux)
+          link_shim_marker = "redwood-vmlinux-link-shims"
+          link_shim_c = root / "drivers/soc/qcom/redwood_vmlinux_link_shims.c"
+          link_shim_body = "\n".join([
+              "// SPDX-License-Identifier: GPL-2.0",
+              f"/* {link_shim_marker}: stock GKI 对齐 — display/WiFi 多在 vendor_dlkm，链入 vmlinux 的内核子系统需桩/别名 */",
+              "",
+              "#include <linux/export.h>",
+              "#include <linux/skbuff.h>",
+              "#include <linux/ipa.h>",
+              "#include <drm/drm_panel.h>",
+              "",
+              "int ipa3_register_rmnet_ctl_cb(",
+              "\tvoid (*ready_cb)(void *user_data1), void *user_data1,",
+              "\tvoid (*stop_cb)(void *user_data2), void *user_data2,",
+              "\tvoid (*rx_cb)(void *user_data3, void *rx_data), void *user_data3)",
+              "{",
+              "\treturn ipa_register_rmnet_ctl_cb(ready_cb, user_data1, stop_cb,",
+              "\t\t\t\t\t\t user_data2, rx_cb, user_data3);",
+              "}",
+              "EXPORT_SYMBOL(ipa3_register_rmnet_ctl_cb);",
+              "",
+              "int ipa3_unregister_rmnet_ctl_cb(void)",
+              "{",
+              "\treturn ipa_unregister_rmnet_ctl_cb();",
+              "}",
+              "EXPORT_SYMBOL(ipa3_unregister_rmnet_ctl_cb);",
+              "",
+              "int ipa3_rmnet_ctl_xmit(struct sk_buff *skb)",
+              "{",
+              "\treturn ipa_rmnet_ctl_xmit(skb);",
+              "}",
+              "EXPORT_SYMBOL(ipa3_rmnet_ctl_xmit);",
+              "",
+              "unsigned int dsi_panel_get_refresh_rate(void)",
+              "{",
+              "\treturn 60;",
+              "}",
+              "EXPORT_SYMBOL(dsi_panel_get_refresh_rate);",
+              "",
+              "struct drm_panel *get_panel(void)",
+              "{",
+              "\treturn NULL;",
+              "}",
+              "EXPORT_SYMBOL(get_panel);",
+              "",
+          ])
+          if link_shim_c.is_file() and link_shim_marker in link_shim_c.read_text():
+              print("[=] redwood_vmlinux_link_shims.c: already present")
+          else:
+              link_shim_c.write_text(link_shim_body)
+              print("[+] redwood_vmlinux_link_shims.c: IPA3 rmnet aliases + display stubs")
+
+          qcom_mk = root / "drivers/soc/qcom/Makefile"
+          if qcom_mk.is_file():
+              mk_text = qcom_mk.read_text()
+              mk_line = f"obj-y += redwood_vmlinux_link_shims.o  # {link_shim_marker}"
+              if link_shim_marker in mk_text:
+                  print("[=] drivers/soc/qcom/Makefile: link shims already wired")
+              elif mk_line not in mk_text:
+                  qcom_mk.write_text(mk_text.rstrip() + "\n" + mk_line + "\n")
+                  print("[+] drivers/soc/qcom/Makefile: build redwood_vmlinux_link_shims.o")
+              else:
+                  print("[=] drivers/soc/qcom/Makefile: link shims line already present")
+          else:
+              errors.append(f"missing {qcom_mk}")
+
+          lpm = root / "drivers/cpuidle/lpm-levels.c"
+          lpm_marker = "redwood-lpm-skip-panel-defer"
+          if lpm.is_file():
+              lpm_text = lpm.read_text()
+              if lpm_marker in lpm_text:
+                  print("[=] lpm-levels.c: panel defer skip already patched")
+              else:
+                  old_lpm = (
+                      "\tif (!active_panel)\n"
+                      "\treturn -EPROBE_DEFER;\n"
+                      "\n"
+                      "\tret = drm_panel_notifier_register(active_panel, &drm_notifier);"
+                  )
+                  new_lpm = (
+                      f"\t/* {lpm_marker}: display in vendor_dlkm; NULL panel must not block cpuidle */\n"
+                      "\tif (active_panel) {\n"
+                      "\tret = drm_panel_notifier_register(active_panel, &drm_notifier);"
+                  )
+                  if old_lpm not in lpm_text:
+                      if "redwood-lpm-skip-panel-defer" in lpm_text or (
+                          "if (active_panel) {" in lpm_text
+                          and "return -EPROBE_DEFER" not in lpm_text
+                      ):
+                          print("[=] lpm-levels.c: panel defer already removed")
+                      else:
+                          errors.append("lpm-levels.c: panel defer anchor not found")
+                  else:
+                      lpm_text = lpm_text.replace(old_lpm, new_lpm, 1)
+                      old_tail = (
+                          "\telse\n"
+                          "\tpr_info(\"Registered DRM panel notifier\\n\");\n"
+                          "#endif"
+                      )
+                      new_tail = (
+                          "\telse\n"
+                          "\tpr_info(\"Registered DRM panel notifier\\n\");\n"
+                          "\t} else {\n"
+                          "\tpr_info(\"lpm: no panel in vmlinux, skip DRM notifier\\n\");\n"
+                          "\t}\n"
+                          "#endif"
+                      )
+                      if old_tail not in lpm_text:
+                          errors.append("lpm-levels.c: panel notifier tail anchor not found")
+                      else:
+                          lpm.write_text(lpm_text.replace(old_tail, new_tail, 1))
+                          print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
+          else:
+              errors.append(f"missing {lpm}")
+
           if errors:
               print("!! redwood compile fixes FAILED:")
               for e in errors:
@@ -1387,6 +1508,8 @@ jobs:
           grep -q "^CONFIG_FTRACE=y" "$CFG" && fail "FTRACE must be disabled (fixup: trace_sched_stat compile)"
           grep -q "^CONFIG_SCHEDSTATS=y" "$CFG" && fail "SCHEDSTATS must be disabled (fixup: FTRACE off → trace_sched_stat_* undeclared in stats.h:60)"
           grep -q "^CONFIG_MSM_PERFORMANCE_QGKI=y" "$CFG" && fail "MSM_PERFORMANCE_QGKI must be disabled (fixup: Scarlet 5.4 has no core_ctl)"
+          grep -q "^CONFIG_QCA_CLD_WLAN=y" "$CFG" && fail "QCA_CLD_WLAN must be disabled (stock WiFi=vendor_dlkm; built-in qcacld + ICNSS2=m → vmlinux link error)"
+          grep -q "^# CONFIG_QCA_CLD_WLAN is not set" "$CFG" || fail "QCA_CLD_WLAN must be explicitly disabled in fixup overlay"
           grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (stock # CONFIG_QTI_BATTERY_CHARGER is not set)"
           grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop)"
           grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
