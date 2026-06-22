@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.5 修复：mq-deadline.c 对 blk_mq_sched_try_insert_merge 传 free 列表（Scarlet 头文件 3 参 / 源 2 参）
 # v6.0.4 修复：stats.h 对 trace_sched_stat_* 加 CONFIG_FTRACE 守卫（fixup 关 FTRACE 后双保险）
 # v6.0.3 修复：fixup 增加禁用 SCHEDSTATS（FTRACE 关后 trace_sched_stat_* 无声明）
 # v6.0.2 修复：fixup 补全 TASK_DELAY_ACCT/FTRACE + ARCH_LAHAINA/ARCH_SHIMA（正确符号名）
@@ -684,6 +685,64 @@ jobs:
                   errors.append("vmscan.c: cannot find shrinker_rwlock anchor for shrinker_rwsem decl")
           else:
               errors.append(f"missing {vmscan}")
+
+          # Scarlet blk-mq-sched.h 已改为 3 参 try_insert_merge，mq-deadline.c 仍 2 参 → stock 开 MQ_IOSCHED_DEADLINE 必炸
+          mq_deadline = root / "block/mq-deadline.c"
+          if mq_deadline.is_file():
+              text = mq_deadline.read_text()
+              marker = "/* redwood: blk_mq_sched_try_insert_merge free list */"
+              if marker in text:
+                  print("[=] mq-deadline.c: try_insert_merge free-list patch already present")
+              elif not re.search(r"blk_mq_sched_try_insert_merge\s*\(\s*q\s*,\s*rq\s*\)", text):
+                  if re.search(r"blk_mq_sched_try_insert_merge\s*\(\s*q\s*,\s*rq\s*,\s*free\s*\)", text):
+                      print("[=] mq-deadline.c: try_insert_merge already uses 3-arg API")
+                  else:
+                      errors.append("mq-deadline.c: blk_mq_sched_try_insert_merge call pattern not found")
+              else:
+                  new_text, n_sig = re.subn(
+                      r"(static void dd_insert_request\(struct blk_mq_hw_ctx \*hctx, struct request \*rq,\s+bool at_head)\)",
+                      r"\1, struct list_head *free)",
+                      text,
+                      count=1,
+                  )
+                  if n_sig != 1:
+                      errors.append("mq-deadline.c: dd_insert_request signature not found")
+                  else:
+                      new_text, n_call = re.subn(
+                          r"if \(blk_mq_sched_try_insert_merge\(q, rq\)\)\s*\n\s*return;",
+                          f"{marker}\n\tif (blk_mq_sched_try_insert_merge(q, rq, free))\n\t\treturn;",
+                          new_text,
+                          count=1,
+                      )
+                      if n_call != 1:
+                          errors.append("mq-deadline.c: 2-arg blk_mq_sched_try_insert_merge call not found")
+                      else:
+                          new_text, n_ins = re.subn(
+                              r"(struct deadline_data \*dd = q->elevator->elevator_data;\s*)"
+                              r"(\n\s*spin_lock\(&dd->lock\);\s*while \(!list_empty\(list\)\) \{.*?"
+                              r"list_del_init\(&rq->queuelist\);\s*)"
+                              r"dd_insert_request\(hctx, rq, at_head\);(\s*\}\s*"
+                              r"spin_unlock\(&dd->lock\);\s*)"
+                              r"(\})",
+                              r"\1LIST_HEAD(free);\2dd_insert_request(hctx, rq, at_head, &free);\3"
+                              r"blk_mq_free_requests(&free);\n\4",
+                              new_text,
+                              count=1,
+                              flags=re.DOTALL,
+                          )
+                          if n_ins != 1:
+                              errors.append("mq-deadline.c: dd_insert_requests block not found")
+                          else:
+                              mq_deadline.write_text(new_text)
+                              print("[+] mq-deadline.c: pass free list to blk_mq_sched_try_insert_merge")
+              if mq_deadline.is_file() and marker not in mq_deadline.read_text():
+                  if not re.search(
+                      r"blk_mq_sched_try_insert_merge\s*\(\s*q\s*,\s*rq\s*,\s*free\s*\)",
+                      mq_deadline.read_text(),
+                  ):
+                      errors.append("mq-deadline.c: try_insert_merge free-list patch failed")
+          else:
+              errors.append(f"missing {mq_deadline}")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
