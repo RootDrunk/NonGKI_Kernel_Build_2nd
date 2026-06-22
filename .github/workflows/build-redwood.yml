@@ -1148,86 +1148,109 @@ jobs:
                       )
                       for old, new in repl:
                           text = text.replace(old, new)
-                      old_prog = (
-                          "\terr = crypto_qti_keyslot_program(host->crypto_vops->priv, key,\n"
-                          "\t\t\t\t slot, data_unit_mask, crypto_alg_id);"
-                      )
-                      new_prog = (
-                          "\tstruct ice_mmio_data mmio_data;\n"
-                          "\n"
-                          "\tcqhci_get_ice_mmio_data(&mmio_data, host);\n"
-                          "\terr = crypto_qti_keyslot_program(&mmio_data, key,\n"
-                          "\t\t\t\t slot, data_unit_mask, crypto_alg_id);"
-                      )
-                      if old_prog in text:
-                          text = text.replace(old_prog, new_prog, 1)
-                      elif "crypto_qti_keyslot_program(&mmio_data, key," in text:
+                      if "crypto_qti_keyslot_program(&mmio_data, key," in text:
                           pass
+                      elif re.search(
+                          r"crypto_qti_keyslot_program\s*\(\s*host->crypto_vops->priv\s*,",
+                          text,
+                      ):
+                          text = re.sub(
+                              r"\terr = crypto_qti_keyslot_program\(host->crypto_vops->priv, key,\n"
+                              r"\s+slot, data_unit_mask, crypto_alg_id\);",
+                              "\tstruct ice_mmio_data mmio_data;\n"
+                              "\n"
+                              "\tcqhci_get_ice_mmio_data(&mmio_data, host);\n"
+                              "\terr = crypto_qti_keyslot_program(&mmio_data, key,\n"
+                              "\t\t\t\t slot, data_unit_mask, crypto_alg_id);",
+                              text,
+                              count=1,
+                          )
                       else:
                           errors.append(
                               "cqhci-crypto-qti.c: crypto_qti_keyslot_program call pattern not found"
                           )
-                      old_evict = (
-                          "\terr = crypto_qti_keyslot_evict(host->crypto_vops->priv, slot);"
-                      )
-                      new_evict = (
-                          "\tstruct ice_mmio_data mmio_data;\n"
-                          "\n"
-                          "\tcqhci_get_ice_mmio_data(&mmio_data, host);\n"
-                          "\terr = crypto_qti_keyslot_evict(&mmio_data, slot);"
-                      )
-                      if old_evict in text:
-                          text = text.replace(old_evict, new_evict, 1)
-                      old_derive = (
-                          "\terr = crypto_qti_derive_raw_secret(host->crypto_vops->priv, wrapped_key, wrapped_key_size,\n"
-                          "\t\t\t\t  secret, secret_size);"
-                      )
-                      new_derive = (
-                          "\terr = crypto_qti_derive_raw_secret(wrapped_key, wrapped_key_size,\n"
-                          "\t\t\t\t\t     secret, secret_size);"
-                      )
-                      if old_derive in text:
-                          text = text.replace(old_derive, new_derive, 1)
-                      old_init = (
-                          "\terr = crypto_qti_init_crypto(&host->pdev->dev, host->icemmio,\n"
-                          "\t\t\t     hwkm_ice_mmio,\n"
-                          "\t\t\t     (void **)&host->crypto_vops->priv);"
-                      )
-                      new_init = "\terr = crypto_qti_init_crypto(host->icemmio);"
-                      if old_init in text:
-                          text = text.replace(old_init, new_init, 1)
-                      elif "crypto_qti_init_crypto(host->icemmio)" in text:
+                      if "crypto_qti_keyslot_evict(&mmio_data, slot)" in text:
                           pass
+                      elif re.search(
+                          r"crypto_qti_keyslot_evict\s*\(\s*host->crypto_vops->priv\s*,",
+                          text,
+                      ):
+                          text = re.sub(
+                              r"\terr = crypto_qti_keyslot_evict\(host->crypto_vops->priv, slot\);",
+                              "\tstruct ice_mmio_data mmio_data;\n"
+                              "\n"
+                              "\tcqhci_get_ice_mmio_data(&mmio_data, host);\n"
+                              "\terr = crypto_qti_keyslot_evict(&mmio_data, slot);",
+                              text,
+                              count=1,
+                          )
+                      if re.search(
+                          r"crypto_qti_derive_raw_secret\s*\(\s*host->crypto_vops->priv\s*,",
+                          text,
+                      ):
+                          text = re.sub(
+                              r"\terr = crypto_qti_derive_raw_secret\(host->crypto_vops->priv, "
+                              r"wrapped_key, wrapped_key_size,\n"
+                              r"\s+secret, secret_size\);",
+                              "\terr = crypto_qti_derive_raw_secret(wrapped_key, wrapped_key_size,\n"
+                              "\t\t\t\t\t     secret, secret_size);",
+                              text,
+                              count=1,
+                          )
+                      if "crypto_qti_init_crypto(host->icemmio)" in text:
+                          pass
+                      elif re.search(
+                          r"crypto_qti_init_crypto\s*\(\s*&host->pdev->dev\s*,",
+                          text,
+                      ):
+                          text = re.sub(
+                              r"\terr = crypto_qti_init_crypto\(&host->pdev->dev, host->icemmio,\n"
+                              r"\s+hwkm_ice_mmio,\n"
+                              r"\s+\(void \*\*\)&host->crypto_vops->priv\);",
+                              "\terr = crypto_qti_init_crypto(host->icemmio);",
+                              text,
+                              count=1,
+                          )
                       else:
                           errors.append("cqhci-crypto-qti.c: crypto_qti_init_crypto call pattern not found")
-                      text = text.replace(
-                          "\tkeyslot_manager_set_max_dun_bytes(host->mmc->ksm, sizeof(u32));\n",
-                          "\thost->mmc->ksm->max_dun_bytes_supported = sizeof(u32);\n",
+                      text = re.sub(
+                          r"\tkeyslot_manager_set_max_dun_bytes\(host->mmc->ksm, sizeof\(u32\)\);",
+                          "\thost->mmc->ksm->max_dun_bytes_supported = sizeof(u32);",
+                          text,
+                          count=1,
                       )
-                      old_debug = "\treturn crypto_qti_debug(host->crypto_vops->priv);"
-                      new_debug = (
-                          "\tstruct ice_mmio_data mmio_data;\n"
-                          "\n"
-                          "\tcqhci_get_ice_mmio_data(&mmio_data, host);\n"
-                          "\treturn crypto_qti_debug(&mmio_data);"
-                      )
-                      if old_debug in text:
-                          text = text.replace(old_debug, new_debug, 1)
-                      old_resume = (
-                          "int cqhci_crypto_qti_resume(struct cqhci_host *host)\n"
-                          "{\n"
-                          "\treturn crypto_qti_resume(host->crypto_vops->priv);\n"
-                          "}"
-                      )
-                      new_resume = (
-                          "int cqhci_crypto_qti_resume(struct cqhci_host *host)\n"
-                          "{\n"
-                          "\treturn 0;\n"
-                          "}"
-                      )
-                      if old_resume in text:
-                          text = text.replace(old_resume, new_resume, 1)
-                      elif "int cqhci_crypto_qti_resume(struct cqhci_host *host)" in text and "return 0;" in text:
+                      if re.search(r"return crypto_qti_debug\s*\(\s*host->crypto_vops->priv\s*\)", text):
+                          text = re.sub(
+                              r"\treturn crypto_qti_debug\(host->crypto_vops->priv\);",
+                              "\tstruct ice_mmio_data mmio_data;\n"
+                              "\n"
+                              "\tcqhci_get_ice_mmio_data(&mmio_data, host);\n"
+                              "\treturn crypto_qti_debug(&mmio_data);",
+                              text,
+                              count=1,
+                          )
+                      elif "return crypto_qti_debug(&mmio_data)" in text:
+                          pass
+                      if re.search(
+                          r"return crypto_qti_resume\s*\(\s*host->crypto_vops->priv\s*\)",
+                          text,
+                      ):
+                          text = re.sub(
+                              r"int cqhci_crypto_qti_resume\(struct cqhci_host \*host\)\n"
+                              r"\{\n"
+                              r"\treturn crypto_qti_resume\(host->crypto_vops->priv\);\n"
+                              r"\}",
+                              "int cqhci_crypto_qti_resume(struct cqhci_host *host)\n"
+                              "{\n"
+                              "\treturn 0;\n"
+                              "}",
+                              text,
+                              count=1,
+                          )
+                      elif re.search(
+                          r"int cqhci_crypto_qti_resume\(struct cqhci_host \*host\)[\s\S]*?return 0;",
+                          text,
+                      ):
                           pass
                       else:
                           errors.append("cqhci-crypto-qti.c: crypto_qti_resume stub pattern not found")
