@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.15 修复：fixup 关 ARCH_LAHAINA → dataipa GSI 块未生效 → IPA3=y 缺 gsi_*（为 ARCH_YUPIK 补 dataipa.h + CONFIG_GSI）
 # v6.0.14 修复：lpm-levels.c 面板 defer 补丁锚点（Scarlet 源码 `\t\treturn -EPROBE_DEFER` 双 tab）
 # v6.0.13 修复：vmlinux 链接 undefined symbol（QCA_CLD_WLAN 残留 + IPA3 rmnet 别名 + display/lpm 桩）
 # v6.0.12 修复：dynamic_debug.c proc_create 需 proc_ops（Scarlet proc_fs.h 已迁移，源码仍传 file_operations）
@@ -1440,6 +1441,43 @@ jobs:
                       print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
           else:
               errors.append(f"missing {lpm}")
+
+          # v6.0.15: fixup 关 ARCH_LAHAINA 后，dataipa/Makefile 的 LAHAINA 专用块不跑 → GSI 未编进 vmlinux
+          dataipa_mk = root / "techpack/dataipa/drivers/platform/msm/Makefile"
+          dataipa_marker = "redwood-yupik-dataipa-gsi"
+          if dataipa_mk.is_file():
+              text = dataipa_mk.read_text()
+              if dataipa_marker in text:
+                  print("[=] dataipa msm Makefile: YUPIK GSI block already patched")
+              else:
+                  anchor = "DATAIPADRVTOP = $(srctree)/techpack/dataipa/drivers/platform/msm"
+                  if anchor not in text:
+                      errors.append("dataipa msm Makefile: DATAIPADRVTOP anchor not found")
+                  else:
+                      yupik_block = "\n".join([
+                          f"# {dataipa_marker}: redwood/YUPIK — mirror LAHAINA dataipa+GSI when ARCH_LAHAINA fixup off",
+                          "ifeq ($(CONFIG_ARCH_YUPIK), y)",
+                          "LINUXINCLUDE    += -include $(srctree)/techpack/dataipa/config/dataipa.h",
+                          "ifeq ($(CONFIG_QGKI),y)",
+                          "include $(srctree)/techpack/dataipa/config/dataipa_QGKI.conf",
+                          "else",
+                          "include $(srctree)/techpack/dataipa/config/dataipa_GKI.conf",
+                          "endif",
+                          "CONFIG_GSI := y",
+                          "CONFIG_GSI_REGISTER_VERSION_2 := y",
+                          "CONFIG_RMNET_IPA3 := y",
+                          "CONFIG_RNDIS_IPA := y",
+                          "CONFIG_IPA_CLIENTS_MANAGER := y",
+                          "endif",
+                          "",
+                      ])
+                      dataipa_mk.write_text(text.replace(anchor, yupik_block + anchor, 1))
+                      print(
+                          "[+] dataipa msm Makefile: enable GSI + RMNET for ARCH_YUPIK "
+                          "(IPA3=y link dependency)"
+                      )
+          else:
+              errors.append(f"missing {dataipa_mk}")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
