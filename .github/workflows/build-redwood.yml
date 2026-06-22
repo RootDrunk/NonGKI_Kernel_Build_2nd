@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.10 触发：push 改 yml/config 自动编译（免找 Run workflow 按钮）
 # v6.0.9 修复：MMC CQHCI crypto 对齐 Scarlet 5.4 blk_keyslot_manager（参考 ufshcd-crypto-qti）+ ipa_i.h wakelock #ifdef 倒置
 # v6.0.8 修复：zram writeback 用 bio_set_dev（Scarlet 5.4 无 bi_bdev 字段）+ 兼容 v6.0.7 已打补丁树
 # v6.0.7 修复：CONFIG_DISABLE_IPA_WAKELOCKS + cam_flash leds-qti-flash.h + zram writeback 5.4 block API
@@ -22,6 +23,14 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 部署清单：configs/DEPLOY-v6.md
 
 on:
+  # push：改 yml/config 后自动编译，不依赖网页 Run workflow 按钮（GitHub 新 UI 常藏该按钮）
+  push:
+    branches:
+      - mainline
+    paths:
+      - '.github/workflows/build-redwood.yml'
+      - 'configs/redwood_stock.config'
+      - 'patches/redwood/**'
   workflow_call:
   workflow_dispatch:
 
