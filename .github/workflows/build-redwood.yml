@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.7 修复：CONFIG_DISABLE_IPA_WAKELOCKS + cam_flash leds-qti-flash.h + zram writeback 5.4 block API
 # v6.0.6 修复：binder.c 命令/返回字符串表脱离 CONFIG_FTRACE（fixup 关 FTRACE 但 EVENT_TRACING 仍开 → binder_trace.h TP_printk 缺符号）
 # v6.0.5 修复：mq-deadline.c 对 blk_mq_sched_try_insert_merge 传 free 列表（Scarlet 头文件 3 参 / 源 2 参）
 # v6.0.4 修复：stats.h 对 trace_sched_stat_* 加 CONFIG_FTRACE 守卫（fixup 关 FTRACE 后双保险）
@@ -232,6 +233,9 @@ jobs:
           # CONFIG_SM_GCC_SHIMA is not set
           # CONFIG_INTERCONNECT_QCOM_LAHAINA is not set
           # CONFIG_INTERCONNECT_QCOM_SHIMA is not set
+          #
+          # ipa_i.h: ipa3_wakelock_ref_cnt 定义在 #ifdef CONFIG_DISABLE_IPA_WAKELOCKS，字段却在 #ifndef 内
+          CONFIG_DISABLE_IPA_WAKELOCKS=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
@@ -781,6 +785,99 @@ jobs:
                       errors.append("binder.c: binder string table FTRACE guard patch failed")
           else:
               errors.append(f"missing {binder_c}")
+
+          flash_inc = "#include <linux/leds-qti-flash.h>"
+          flash_marker = "/* redwood: cam_flash needs leds-qti-flash for QUERY_MAX_AVAIL_CURRENT */"
+
+          def patch_cam_flash_include(rel_path: str, anchor: str) -> None:
+              path = root / rel_path
+              if not path.is_file():
+                  errors.append(f"missing {path}")
+                  return
+              text = path.read_text()
+              if flash_inc in text:
+                  print(f"[=] {rel_path}: {flash_inc} already present")
+                  return
+              if anchor not in text:
+                  errors.append(f"{rel_path}: include anchor not found ({anchor!r})")
+                  return
+              path.write_text(
+                  text.replace(anchor, anchor + f"\n{flash_marker}\n{flash_inc}", 1)
+              )
+              print(f"[+] {rel_path}: added {flash_inc}")
+
+          patch_cam_flash_include(
+              "techpack/camera/drivers/cam_sensor_module/cam_flash/cam_flash_core.c",
+              '#include "cam_packet_util.h"',
+          )
+          patch_cam_flash_include(
+              "techpack/camera/drivers/cam_sensor_module/cam_flash/cam_flash_soc.c",
+              '#include "cam_res_mgr_api.h"',
+          )
+
+          # MIUI zram writeback 使用 5.10+ block API（BLK_OPEN_* / 4-arg bio_alloc），Scarlet 5.4 需适配
+          zram_drv = root / "drivers/block/zram/zram_drv.c"
+          if zram_drv.is_file():
+              text = zram_drv.read_text()
+              zmarker = "/* redwood: zram writeback 5.4 block layer API */"
+              if zmarker in text:
+                  print("[=] zram_drv.c: 5.4 block API patch already present")
+              elif "BLK_OPEN_READ" not in text and "bio_alloc(GFP_NOIO, 1)" in text:
+                  print("[=] zram_drv.c: already uses 5.4 block API")
+              elif "BLK_OPEN_READ" not in text:
+                  errors.append("zram_drv.c: BLK_OPEN_READ pattern not found (unexpected tree)")
+              else:
+                  text = text.replace(
+                      "BLK_OPEN_READ | BLK_OPEN_WRITE",
+                      "FMODE_READ | FMODE_WRITE",
+                  )
+                  text = re.sub(
+                      r"blkdev_get_by_dev\(([^,]+),\s*FMODE_READ \| FMODE_WRITE,\s*"
+                      r"zram,\s*NULL\)",
+                      r"blkdev_get_by_dev(\1, FMODE_READ | FMODE_WRITE, zram)",
+                      text,
+                      count=1,
+                  )
+                  text = text.replace("blkdev_put(bdev, zram)", "blkdev_put(bdev, FMODE_READ | FMODE_WRITE)")
+                  old_bio_alloc = "bio = bio_alloc(zram->bdev, 1, parent->bi_opf, GFP_NOIO);"
+                  new_bio_alloc = (
+                      f"{zmarker}\n"
+                      "\tbio = bio_alloc(GFP_NOIO, 1);\n"
+                      "\tbio->bi_bdev = zram->bdev;\n"
+                      "\tbio->bi_opf = parent->bi_opf;"
+                  )
+                  if old_bio_alloc not in text:
+                      errors.append("zram_drv.c: 4-arg bio_alloc call not found")
+                  else:
+                      text = text.replace(old_bio_alloc, new_bio_alloc, 1)
+                      text, n_wb = re.subn(
+                          r"bio_init\(&bio,\s*zram->bdev,\s*&bio_vec,\s*1,\s*"
+                          r"REQ_OP_WRITE \| REQ_SYNC\);",
+                          "bio_init(&bio, &bio_vec, 1);\n"
+                          "\tbio.bi_bdev = zram->bdev;\n"
+                          "\tbio.bi_opf = REQ_OP_WRITE | REQ_SYNC;",
+                          text,
+                          count=1,
+                      )
+                      text, n_sync = re.subn(
+                          r"bio_init\(&bio,\s*zw->zram->bdev,\s*&bv,\s*1,\s*REQ_OP_READ\);",
+                          "bio_init(&bio, &bv, 1);\n"
+                          "\tbio.bi_bdev = zw->zram->bdev;\n"
+                          "\tbio.bi_opf = REQ_OP_READ;",
+                          text,
+                          count=1,
+                      )
+                      if n_wb != 1:
+                          errors.append("zram_drv.c: writeback bio_init call not found")
+                      elif n_sync != 1:
+                          errors.append("zram_drv.c: sync read bio_init call not found")
+                      else:
+                          zram_drv.write_text(text)
+                          print("[+] zram_drv.c: adapted writeback paths to Linux 5.4 block API")
+              if zram_drv.is_file() and "BLK_OPEN_READ" in zram_drv.read_text():
+                  errors.append("zram_drv.c: 5.4 block API patch failed")
+          else:
+              errors.append(f"missing {zram_drv}")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
