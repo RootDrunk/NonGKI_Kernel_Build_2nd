@@ -117,7 +117,8 @@ jobs:
           HOOK_FILES=(
             fs/exec.c fs/read_write.c fs/open.c fs/stat.c fs/devpts/inode.c
             fs/namei.c drivers/input/input.c drivers/tty/pty.c
-            security/selinux/hooks.c kernel/reboot.c kernel/sys.c
+            security/selinux/hooks.c security/selinux/selinuxfs.c
+            kernel/reboot.c kernel/sys.c
           )
           for f in "${HOOK_FILES[@]}"; do
             git checkout -- "$f"
@@ -302,7 +303,14 @@ jobs:
                   print("[=] file_wrapper.c: iterate guards already correct")
 
           selinuxfs = root / "security/selinux/selinuxfs.c"
-          if selinuxfs.is_file():
+          if skip_susfs:
+              if not selinuxfs.is_file():
+                  errors.append(f"missing {selinuxfs}")
+              elif "ksu_sel_write_context" not in selinuxfs.read_text():
+                  errors.append("selinuxfs.c: Scarlet native ksu_sel_write_context hook missing (boot-test)")
+              else:
+                  print("[=] selinuxfs.c: Scarlet native ksu_sel_write_context kept (boot-test)")
+          elif selinuxfs.is_file():
               text = selinuxfs.read_text()
               orig = text
               blocks = [
@@ -331,7 +339,14 @@ jobs:
               errors.append(f"missing {selinuxfs}")
 
           hooks = root / "security/selinux/hooks.c"
-          if hooks.is_file():
+          if skip_susfs:
+              if not hooks.is_file():
+                  errors.append(f"missing {hooks}")
+              elif "ksu_hide_setprocattr" not in hooks.read_text():
+                  errors.append("hooks.c: Scarlet native ksu_hide_setprocattr hook missing (boot-test)")
+              else:
+                  print("[=] hooks.c: Scarlet native ksu_hide_setprocattr kept (boot-test)")
+          elif hooks.is_file():
               text = hooks.read_text()
               orig = text
               text = text.replace(
