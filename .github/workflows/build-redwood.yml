@@ -3,11 +3,17 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
-# v5.7 变更摘要（2026-06-22）:
+# v5.8 变更摘要（2026-06-22）:
+#   - AnyKernel3：写入极简 anykernel.sh，删除 tuna/Galaxy Nexus 模板补丁
+#   - boot-test 强制只打包 Image（禁止 Image.gz-dtb/dtbo）
+#   - boot-test 校验 CONFIG_KSU=y；满血版 CONFIG_KSU_SUSFS 缺失直接 fail
+#   - ksuver 文档更正为 Scarlet 原生 32486
+#   - Image.gz 大小阈值单独放宽（12MB），避免误杀
+# v5.7 变更摘要:
 #   - 不再 merge redwood.config（BQ2597X_BATTERY_CHARGER + 无 MACH_XIAOMI → qti_battery_charger 编译失败）
 #   - bootfix 对齐 stock：# CONFIG_QTI_BATTERY_CHARGER is not set（充电走 ODIN 模块路径）
 #   - 保留 v5.6：MACH_XIAOMI 关、MI_THERMAL、overlay 关、do.systemless=0
-#   - boot-test: build-ready 拉 ReSukiSU 后 Restore 还原 Scarlet 原生 KSU v32507
+#   - boot-test: build-ready 拉 ReSukiSU 后 Restore 还原 Scarlet 原生 KSU（ksuver 32486）
 #     （切勿设 KERNELSU_AUTO_GET=false：会走 MANUAL 分支 curl 空 URL → malformed）
 #   - 编译后校验 .config + AnyKernel3 zip 完整性
 
@@ -40,7 +46,7 @@ env:
   DEFCONFIG_FROM_BOOT: false
 
   # 两阶段编译开关（见文档 §9）:
-  #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false  → Scarlet 原生 KSU(v32507)，验证能开机
+  #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false  → Scarlet 原生 KSU(ksuver 32486)，验证能开机
   #   阶段2 满血版:    SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true   → ReSukiSU + SUSFS
   SUSFS_BOOT_TEST: "true"
   SUSFS_ENABLE : false
@@ -114,7 +120,7 @@ jobs:
 
       # build-ready 用 KERNELSU_AUTO_GET=true + AUTO_FORK=resukisu 拉取 ReSukiSU（已验证可编译）。
       #   注意：KERNELSU_AUTO_GET=false 会走 KERNELSU_MANUAL → curl "$KERNELSU_SOURCE"(空) → URL malformed。
-      # boot-test 阶段随后由 "Restore Scarlet native KernelSU" 把 drivers/kernelsu 还原为 Scarlet 原生(v32507)。
+      # boot-test 阶段随后由 "Restore Scarlet native KernelSU" 把 drivers/kernelsu 还原为 Scarlet 原生(ksuver 32486)。
       - name: Get neccssary tools
         uses: ./.github/workflows/build-ready
 
@@ -162,7 +168,7 @@ jobs:
             echo "[ERROR] selinuxfs.c missing Scarlet native ksu_sel_write_context"
             exit 1
           fi
-          echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver ~32507, can boot)"
+          echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver 32486)"
 
       - name: Write redwood bootfix fragment
         run: |
@@ -713,11 +719,12 @@ jobs:
           grep -q "^# CONFIG_MMC is not set" "$CFG" && fail "MMC must stay enabled (redwood.config disables it — bootfix must override)"
           grep -q "^# CONFIG_MMC_CRYPTO is not set" "$CFG" || fail "MMC_CRYPTO must stay disabled (5.4 compile API mismatch; UFS FBE unaffected)"
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            must "CONFIG_KSU=y"
             grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CFG" && fail "boot-test must not force CONFIG_KSU_MANUAL_HOOK (Scarlet native hooks)"
-            echo "[OK] boot-test .config: Scarlet native KSU path (ksuver ~32507)"
+            echo "[OK] boot-test .config: CONFIG_KSU=y Scarlet native (ksuver 32486)"
           else
-            grep -q "^CONFIG_KSU=y" "$CFG" || fail "phase-2 requires CONFIG_KSU=y"
-            grep -q "^CONFIG_KSU_SUSFS=y" "$CFG" || echo "[WARN] CONFIG_KSU_SUSFS not set — check SUSFS patch step"
+            must "CONFIG_KSU=y"
+            must "CONFIG_KSU_SUSFS=y"
           fi
           echo "[OK] redwood .config verified ($(wc -l < "$CFG") lines)"
 
@@ -738,50 +745,70 @@ jobs:
             KSU_LABEL="ReSukiSU+SUSFS redwood crDroid16 ${TIME}"
           fi
 
-          AK3=Anykernel3/anykernel.sh
-          sed -i 's/ExampleKernel by osm0sis @ xda-developers/NonGKI redwood by JackAltman/g' "$AK3"
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' "$AK3"
-          sed -i 's/do.modules=1/do.modules=0/g' "$AK3"
-          sed -i 's/do.systemless=1/do.systemless=0/g' "$AK3"
-          grep -q 'do.systemless=0' "$AK3" || { echo "[ERROR] anykernel.sh must have do.systemless=0 (must flash boot)"; exit 1; }
-          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' "$AK3"
-          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' "$AK3"
-          sed -i 's/device.name1=.*/device.name1=redwood;/' "$AK3"
-          sed -i 's/device.name2=.*/device.name2=22101320C;/' "$AK3"
-          sed -i "s/kernel.string=.*/kernel.string=${KSU_LABEL};/" "$AK3"
-          if grep -q '^PATCH_VBMETA_FLAG=' "$AK3"; then
-            sed -i 's/^PATCH_VBMETA_FLAG=.*/PATCH_VBMETA_FLAG=auto;/' "$AK3"
-          else
-            printf '\nPATCH_VBMETA_FLAG=auto;\n' >> "$AK3"
-          fi
+          # 禁止沿用上游 tuna/Galaxy Nexus 模板（init.tuna.rc/fstab 补丁会破坏 redwood boot ramdisk）
+          cat > Anykernel3/anykernel.sh <<EOF
+          ### AnyKernel3 Ramdisk Mod Script
+          ## redwood crDroid16 NonGKI (minimal: dump_boot + write_boot only)
+
+          properties() { '
+          kernel.string=${KSU_LABEL}
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=redwood
+          device.name2=22101320C
+          device.name3=
+          device.name4=
+          device.name5=
+          '; }
+
+          boot_attributes() {
+            set_perm_recursive 0 0 755 644 \$RAMDISK/*;
+            set_perm_recursive 0 0 750 750 \$RAMDISK/init* \$RAMDISK/sbin;
+          }
+
+          BLOCK=auto;
+          is_slot_device=auto;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          EOF
+          sed -i 's/^          //' Anykernel3/anykernel.sh
+          grep -q 'do.systemless=0' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing do.systemless=0"; exit 1; }
+          grep -q 'init.tuna.rc' Anykernel3/anykernel.sh && { echo "[ERROR] anykernel.sh still contains tuna template"; exit 1; }
+          grep -q 'write_boot;' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing write_boot"; exit 1; }
 
           mkdir -p tmp
-          if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
-            cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/
-            echo "[+] pack Image.gz-dtb"
-          elif [[ -f "$IMAGE_DIR/Image.gz" ]]; then
-            cp -fp "$IMAGE_DIR/Image.gz" tmp/
-            echo "[+] pack Image.gz"
-          elif [[ -f "$IMAGE_DIR/Image" ]]; then
-            cp -fp "$IMAGE_DIR/Image" tmp/
-            echo "[+] pack Image"
-          else
-            echo "[-] no kernel image in $IMAGE_DIR"
-            ls -la "$IMAGE_DIR" || true
-            exit 1
-          fi
-
-          KERNEL_FILE=$(find tmp -maxdepth 1 -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' \) | head -1)
-          KERNEL_SIZE=$(stat -c%s "$KERNEL_FILE")
-          if [[ "$KERNEL_SIZE" -lt 30000000 ]]; then
-            echo "[ERROR] kernel image too small (${KERNEL_SIZE} bytes) — likely bad build"
-            exit 1
-          fi
-          echo "[+] kernel image size OK: ${KERNEL_SIZE} bytes"
-
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
-            echo "[!!] boot-test: 仅刷 Image，沿用原厂 dtbo/dtb（避免不匹配 dtbo 导致 bootloop）"
+            # boot-test：只刷未压缩 Image，禁止 Image.gz-dtb（自带 DTB 与 stock dtbo 冲突 → bootloop）
+            if [[ ! -f "$IMAGE_DIR/Image" ]]; then
+              echo "[ERROR] boot-test requires out/.../boot/Image (uncompressed)"
+              ls -la "$IMAGE_DIR" || true
+              exit 1
+            fi
+            cp -fp "$IMAGE_DIR/Image" tmp/
+            echo "[+] boot-test pack: Image only (no Image.gz-dtb, no dtbo)"
           else
+            if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
+              cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/
+              echo "[+] pack Image.gz-dtb"
+            elif [[ -f "$IMAGE_DIR/Image.gz" ]]; then
+              cp -fp "$IMAGE_DIR/Image.gz" tmp/
+              echo "[+] pack Image.gz"
+            elif [[ -f "$IMAGE_DIR/Image" ]]; then
+              cp -fp "$IMAGE_DIR/Image" tmp/
+              echo "[+] pack Image"
+            else
+              echo "[ERROR] no kernel image in $IMAGE_DIR"
+              ls -la "$IMAGE_DIR" || true
+              exit 1
+            fi
             if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
               cp -fp "$IMAGE_DIR/dtbo.img" tmp/
             fi
@@ -791,6 +818,20 @@ jobs:
               cp -fp "$IMAGE_DIR/dtb" tmp/
             fi
           fi
+
+          KERNEL_FILE=$(find tmp -maxdepth 1 -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' \) | head -1)
+          KERNEL_SIZE=$(stat -c%s "$KERNEL_FILE")
+          KERNEL_BASE=$(basename "$KERNEL_FILE")
+          case "$KERNEL_BASE" in
+            Image) MIN_SIZE=30000000 ;;
+            Image.gz|Image.gz-dtb) MIN_SIZE=12000000 ;;
+            *) MIN_SIZE=10000000 ;;
+          esac
+          if [[ "$KERNEL_SIZE" -lt "$MIN_SIZE" ]]; then
+            echo "[ERROR] kernel $KERNEL_BASE too small (${KERNEL_SIZE} bytes, min ${MIN_SIZE})"
+            exit 1
+          fi
+          echo "[+] kernel size OK: $KERNEL_BASE = ${KERNEL_SIZE} bytes"
 
           cp -rp ./Anykernel3/* tmp/
           cd tmp
@@ -802,7 +843,7 @@ jobs:
 
           echo "PACK_METHOD=Anykernel3" >> "$GITHUB_ENV"
           echo "PACK_NAME=$AK3_ZIP" >> "$GITHUB_ENV"
-          echo "[OK] sideload artifact: $AK3_ZIP"
+          echo "[OK] sideload artifact: $AK3_ZIP (UTC build id ${TIME})"
           echo "[!!] DO NOT fastboot flash raw Image or *-image.img on redwood"
 
       - name: Verify AnyKernel3 artifact integrity
@@ -829,7 +870,12 @@ jobs:
           7za e -y -o/tmp/ak3verify "$ZIP" anykernel.sh >/dev/null
           grep -q 'do.systemless=0' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh must have do.systemless=0"; exit 1; }
           grep -q 'do.modules=0' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh must have do.modules=0"; exit 1; }
-          echo "[OK] anykernel.sh: do.systemless=0 do.modules=0"
+          grep -q 'init.tuna.rc' /tmp/ak3verify/anykernel.sh && { echo "[ERROR] zip anykernel.sh contains tuna template patches"; exit 1; }
+          grep -q 'write_boot;' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh missing write_boot"; exit 1; }
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            echo "$LIST" | grep -qE 'Image\.gz-dtb' && { echo "[ERROR] boot-test zip must not contain Image.gz-dtb"; exit 1; }
+          fi
+          echo "[OK] anykernel.sh: minimal redwood script, do.systemless=0"
           echo "[OK] artifact integrity OK: $ZIP (${ZSZ} bytes)"
 
       - name: Upload Artifacts
