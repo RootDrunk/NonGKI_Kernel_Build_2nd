@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.12 修复：dynamic_debug.c proc_create 需 proc_ops（Scarlet proc_fs.h 已迁移，源码仍传 file_operations）
 # v6.0.11 修复：msm_performance.c 缺 linux/sched/core_ctl.h（Scarlet 5.4 无 core_ctl）→ include 守卫 + 关 MSM_PERFORMANCE_QGKI
 # v6.0.10 触发：push 改 yml/config 自动编译（免找 Run workflow 按钮）
 # v6.0.9 修复：MMC CQHCI crypto 对齐 Scarlet 5.4 blk_keyslot_manager（参考 ufshcd-crypto-qti）+ ipa_i.h wakelock #ifdef 倒置
@@ -1288,6 +1289,49 @@ jobs:
                       )
           else:
               errors.append(f"missing {msm_perf}")
+
+          ddebug = root / "lib/dynamic_debug.c"
+          ddebug_marker = "redwood-ddebug-proc-ops"
+          if ddebug.is_file():
+              text = ddebug.read_text()
+              if ddebug_marker in text:
+                  print("[=] dynamic_debug.c: proc_ops for proc_create already patched")
+              else:
+                  fops_anchor = re.search(
+                      r"static const struct file_operations ddebug_proc_fops = \{[\s\S]*?\};",
+                      text,
+                  )
+                  if not fops_anchor:
+                      errors.append("dynamic_debug.c: ddebug_proc_fops block not found")
+                  elif "proc_create(\"control\", 0644, procfs_dir, &ddebug_proc_fops)" not in text:
+                      errors.append("dynamic_debug.c: proc_create control pattern not found")
+                  else:
+                      proc_ops_block = (
+                          "\n\nstatic const struct proc_ops ddebug_proc_ops = {\n"
+                          "\t.proc_open = ddebug_proc_open,\n"
+                          "\t.proc_read = seq_read,\n"
+                          "\t.proc_lseek = seq_lseek,\n"
+                          "\t.proc_release = seq_release_private,\n"
+                          "\t.proc_write = ddebug_proc_write,\n"
+                          f"}}; /* {ddebug_marker} */"
+                      )
+                      text = text.replace(
+                          fops_anchor.group(0),
+                          fops_anchor.group(0) + proc_ops_block,
+                          1,
+                      )
+                      text = text.replace(
+                          'proc_create("control", 0644, procfs_dir, &ddebug_proc_fops)',
+                          'proc_create("control", 0644, procfs_dir, &ddebug_proc_ops)',
+                          1,
+                      )
+                      ddebug.write_text(text)
+                      print(
+                          "[+] dynamic_debug.c: proc_create uses proc_ops "
+                          "(Scarlet 5.4 proc_fs.h migration)"
+                      )
+          else:
+              errors.append(f"missing {ddebug}")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
