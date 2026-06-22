@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.6 修复：binder.c 命令/返回字符串表脱离 CONFIG_FTRACE（fixup 关 FTRACE 但 EVENT_TRACING 仍开 → binder_trace.h TP_printk 缺符号）
 # v6.0.5 修复：mq-deadline.c 对 blk_mq_sched_try_insert_merge 传 free 列表（Scarlet 头文件 3 参 / 源 2 参）
 # v6.0.4 修复：stats.h 对 trace_sched_stat_* 加 CONFIG_FTRACE 守卫（fixup 关 FTRACE 后双保险）
 # v6.0.3 修复：fixup 增加禁用 SCHEDSTATS（FTRACE 关后 trace_sched_stat_* 无声明）
@@ -743,6 +744,43 @@ jobs:
                       errors.append("mq-deadline.c: try_insert_merge free-list patch failed")
           else:
               errors.append(f"missing {mq_deadline}")
+
+          # fixup 关 FTRACE 但 stock 仍开 EVENT_TRACING → CREATE_TRACE_POINTS 编译 binder_trace.h
+          # 其 TP_printk 引用 binder_{command,return}_strings，而 Scarlet 仅在 CONFIG_FTRACE 下定义
+          binder_c = root / "drivers/android/binder.c"
+          if binder_c.is_file():
+              text = binder_c.read_text()
+              marker = "/* redwood: binder string tables always visible for EVENT_TRACING */"
+              if marker in text:
+                  print("[=] binder.c: binder string table FTRACE guard already removed")
+              elif "#ifdef CONFIG_FTRACE\nstatic const char *const binder_return_strings[]" not in text:
+                  if "static const char *const binder_return_strings[]" in text:
+                      print("[=] binder.c: binder string tables already unconditional")
+                  else:
+                      errors.append("binder.c: binder_return_strings definition not found")
+              else:
+                  text = text.replace(
+                      "#ifdef CONFIG_FTRACE\nstatic const char *const binder_return_strings[]",
+                      f"{marker}\nstatic const char *const binder_return_strings[]",
+                      1,
+                  )
+                  old_tail = '"BC_REPLY_SG",\n};\n#endif\n\n#ifdef CONFIG_ANDROID_BINDER_LOGS'
+                  new_tail = '"BC_REPLY_SG",\n};\n\n#ifdef CONFIG_ANDROID_BINDER_LOGS'
+                  if old_tail not in text:
+                      errors.append("binder.c: binder_command_strings CONFIG_FTRACE endif anchor not found")
+                  else:
+                      text = text.replace(old_tail, new_tail, 1)
+                      binder_c.write_text(text)
+                      print("[+] binder.c: expose binder_command/return string tables without CONFIG_FTRACE")
+              if binder_c.is_file():
+                  body = binder_c.read_text()
+                  if marker not in body and re.search(
+                      r"#ifdef CONFIG_FTRACE\s*\nstatic const char \*const binder_return_strings",
+                      body,
+                  ):
+                      errors.append("binder.c: binder string table FTRACE guard patch failed")
+          else:
+              errors.append(f"missing {binder_c}")
 
           if errors:
               print("!! redwood compile fixes FAILED:")
