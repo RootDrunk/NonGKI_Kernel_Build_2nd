@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.2 修复：fixup 补全 TASK_DELAY_ACCT/FTRACE + ARCH_LAHAINA/ARCH_SHIMA（正确符号名）
 # v6.0.1 修复：stock merge 未覆盖 defconfig 的 MACH_XIAOMI=y → dts Makefile overlay 编译错误
 # v6.0 方案 C — stock 对齐（2026-06-22）:
 #   - 废弃 redwood_bootfix.config（v5 人为关 MACH_XIAOMI/改充电/改 thermal → 与 stock 偏离 → bootloop）
@@ -204,14 +205,30 @@ jobs:
           set -euxo pipefail
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock_fixup.config"
           cat > "$FRAG" <<'EOF'
-          # stock /proc/config.gz 无 MACH_* 行，但 xiaomi-qgki_defconfig 默认 MACH_XIAOMI=y；
-          # 不显式关闭会触发 dts Makefile: Xiaomi DT w/o overlay is undefined!!!
+          # v6.0.2 — 在 stock merge 之后强制覆盖 Scarlet 源码不兼容项（与 stock 字面略有偏离，仅为能编过）
+          #
+          # sbalance.c: trace_sched_stat_*_enabled 隐式声明（stock FTRACE+TASK_DELAY_ACCT vs Scarlet 5.4）
+          # CONFIG_TASK_DELAY_ACCT is not set
+          # CONFIG_FTRACE is not set
+          #
+          # stock /proc/config.gz 无 MACH_* 行，但 xiaomi-qgki_defconfig 默认 MACH_XIAOMI=y
           # CONFIG_MACH_XIAOMI is not set
           # CONFIG_MACH_XIAOMI_REDWOOD is not set
           # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
+          #
+          # stock 开 ARCH_LAHAINA/ARCH_SHIMA（GKI 多平台），Scarlet 树 shima-gpu.dtsi 语法错误 → 只保留 YUPIK/redwood
+          # 注意：符号名是 ARCH_LAHAINA/ARCH_SHIMA，不是 ARCH_QCOM_*
+          # CONFIG_ARCH_LAHAINA is not set
+          # CONFIG_ARCH_SHIMA is not set
+          # CONFIG_PINCTRL_LAHAINA is not set
+          # CONFIG_PINCTRL_SHIMA is not set
+          # CONFIG_MSM_GCC_LAHAINA is not set
+          # CONFIG_SM_GCC_SHIMA is not set
+          # CONFIG_INTERCONNECT_QCOM_LAHAINA is not set
+          # CONFIG_INTERCONNECT_QCOM_SHIMA is not set
           EOF
           sed -i 's/^          //' "$FRAG"
-          echo "[OK] wrote redwood_stock_fixup.config (disable MACH_XIAOMI + DT overlay)"
+          echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
 
       - name: Write redwood KSU overlay (boot-test)
         if: env.SUSFS_BOOT_TEST == 'true'
@@ -671,6 +688,10 @@ jobs:
           grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (stock dtbo path)"
           grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set (stock uses ARCH_YUPIK/PINCTRL_REDWOOD; 101618 bootloop)"
           grep -q "^CONFIG_MACH_XIAOMI_REDWOOD=y" "$CFG" && fail "MACH_XIAOMI_REDWOOD must not be set"
+          grep -q "^CONFIG_ARCH_LAHAINA=y" "$CFG" && fail "ARCH_LAHAINA must be disabled (fixup: avoid lahaina DTB build)"
+          grep -q "^CONFIG_ARCH_SHIMA=y" "$CFG" && fail "ARCH_SHIMA must be disabled (fixup: shima-gpu.dtsi DTC error)"
+          grep -q "^CONFIG_TASK_DELAY_ACCT=y" "$CFG" && fail "TASK_DELAY_ACCT must be disabled (fixup: trace_sched_stat compile)"
+          grep -q "^CONFIG_FTRACE=y" "$CFG" && fail "FTRACE must be disabled (fixup: trace_sched_stat compile)"
           grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (stock # CONFIG_QTI_BATTERY_CHARGER is not set)"
           grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop)"
           grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
