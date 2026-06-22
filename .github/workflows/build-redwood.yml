@@ -136,26 +136,54 @@ jobs:
           set -euxo pipefail
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_bootfix.config"
           cat > "$FRAG" <<'EOF'
-          # redwood bootfix: do NOT merge full crDroid ikconfig (breaks Scarlet 5.4 compile)
-          # redwood.config wrongly disables storage stack required by crDroid
+          # redwood bootfix v2: 对齐出厂 crDroid /proc/config.gz（同源 Scarlet 编译，组合自洽）
+          # 原 v1 为"让编译通过"禁用了 FBE 加密链/MODULES/MEMCG → /data 解密失败卡 logo。
+          # 此版改为开启官方同款配置，并依赖 crypto-qti-platform.h/ufs-qcom.h 源码补丁消除 stub 冲突。
+
+          # --- 存储栈（redwood.config 错误地禁用了 MMC）---
           CONFIG_MMC=y
-          CONFIG_QCOM_FSA4480_I2C=y
-          # Scarlet 5.4 has no blk inline encryption API → cqhci-crypto.c fails to compile
-          # CONFIG_MMC_CRYPTO is not set
-          # CONFIG_BLK_INLINE_ENCRYPTION is not set
-          # QTI_CRYPTO_COMMON=n but HWKM=y → crypto-qti-platform.h stubs clash with crypto-qti-hwkm.c
-          # CONFIG_QTI_HW_KEY_MANAGER is not set
-          # Scarlet compile stability (crdroid ikconfig had enabled these → vmscan/stats errors)
-          # CONFIG_MEMCG is not set
-          # CONFIG_TASK_DELAY_ACCT is not set
-          # CONFIG_FTRACE is not set
+          CONFIG_MMC_BLOCK=y
+          CONFIG_MMC_SDHCI=y
+          CONFIG_MMC_SDHCI_MSM=y
+          CONFIG_MMC_CQHCI=y
+
+          # --- FBE 文件级加密链：缺一项即 /data 解密失败 → bootloop（值取自官方 config.gz）---
+          CONFIG_QTI_CRYPTO_COMMON=y
+          CONFIG_QTI_HW_KEY_MANAGER=y
+          CONFIG_MMC_CRYPTO=y
+          CONFIG_MMC_CQHCI_CRYPTO=y
+          CONFIG_MMC_CQHCI_CRYPTO_QTI=y
+          CONFIG_SCSI_UFS_CRYPTO=y
+          CONFIG_SCSI_UFS_CRYPTO_QTI=y
+          CONFIG_BLK_INLINE_ENCRYPTION=y
+          CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK=y
+          CONFIG_DM_DEFAULT_KEY=y
+          CONFIG_FS_ENCRYPTION=y
+          CONFIG_FS_ENCRYPTION_ALGS=y
+          CONFIG_FS_ENCRYPTION_INLINE_CRYPT=y
+
+          # --- cgroup / 计账：crDroid userspace init 必需 ---
+          CONFIG_MEMCG=y
+          CONFIG_MEMCG_SWAP=y
+          CONFIG_MEMCG_SWAP_ENABLED=y
+          CONFIG_MEMCG_KMEM=y
+          CONFIG_TASK_DELAY_ACCT=y
+          CONFIG_FTRACE=y
+
+          # --- 模块支持：官方为模块化内核，禁用后大量 vendor 驱动消失 → bootloop ---
+          CONFIG_MODULES=y
+
+          # --- LTO：保留 LTO_NONE 以缩短云编译时间；不影响能否开机（官方为 LTO_CLANG）---
           CONFIG_LTO_NONE=y
           # CONFIG_LTO_CLANG is not set
-          # CONFIG_MODULES is not set
-          CONFIG_BUILD_ARM64_DT_OVERLAY=y
+
+          # --- 对齐官方关闭项，减少与出厂内核的差异 ---
+          # CONFIG_QCOM_FSA4480_I2C is not set
+          # CONFIG_TMPFS_XATTR is not set
+          # 不在内核内生成 dtbo overlay：沿用设备原厂 dtbo，避免 AnyKernel3 刷入不匹配 dtbo → bootloop
+          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
           CONFIG_MACH_XIAOMI=y
           CONFIG_MACH_XIAOMI_REDWOOD=y
-          CONFIG_TMPFS_XATTR=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote $(wc -l < "$FRAG") lines to redwood_bootfix.config"
@@ -525,13 +553,17 @@ jobs:
             exit 1
           fi
 
-          if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
-            cp -fp "$IMAGE_DIR/dtbo.img" tmp/
-          fi
-          if [[ -f "$IMAGE_DIR/dtb.img" ]]; then
-            cp -fp "$IMAGE_DIR/dtb.img" tmp/dtb
-          elif [[ -f "$IMAGE_DIR/dtb" ]]; then
-            cp -fp "$IMAGE_DIR/dtb" tmp/
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            echo "[!!] boot-test: 仅刷 Image，沿用原厂 dtbo/dtb（避免不匹配 dtbo 导致 bootloop）"
+          else
+            if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
+              cp -fp "$IMAGE_DIR/dtbo.img" tmp/
+            fi
+            if [[ -f "$IMAGE_DIR/dtb.img" ]]; then
+              cp -fp "$IMAGE_DIR/dtb.img" tmp/dtb
+            elif [[ -f "$IMAGE_DIR/dtb" ]]; then
+              cp -fp "$IMAGE_DIR/dtb" tmp/
+            fi
           fi
 
           cp -rp ./Anykernel3/* tmp/
