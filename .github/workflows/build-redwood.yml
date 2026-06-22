@@ -3,11 +3,12 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
-# v5.3 变更摘要（2026-06-22）:
-#   - bootfix v3: LTO_CLANG + MODVERSIONS（LTO_NONE 会 bootloop）
-#   - boot-test: build-ready 拉 ReSukiSU 后由 Restore 步骤还原为 Scarlet 原生 KSU v32507
+# v5.4 变更摘要（2026-06-22）:
+#   - bootfix v4: 去掉 redwood.config merge；BUILD_ARM64_DT_OVERLAY 关闭对齐 stock dtbo
+#   - 不再强开 CONFIG_MACH_XIAOMI*（090632 bootloop 实机对照 /proc/config.gz）
+#   - dts Makefile 补丁：允许无 overlay 编译
+#   - boot-test: build-ready 拉 ReSukiSU 后 Restore 还原 Scarlet 原生 KSU v32507
 #     （切勿设 KERNELSU_AUTO_GET=false：会走 MANUAL 分支 curl 空 URL → malformed）
-#   - boot-test: 跳过 Re:Kernel/Droidspaces/BasebandGuard/no-kprobe 替换
 #   - 编译后校验 .config + AnyKernel3 zip 完整性
 
 on:
@@ -91,7 +92,7 @@ env:
   SKIP_PATCH: "true"
 
   BUILD_OTHER_CONFIG: "true"
-  MERGE_CONFIG_FILES: "vendor/redwood.config,vendor/redwood_bootfix.config"
+  MERGE_CONFIG_FILES: "vendor/redwood_bootfix.config"
 
   FREE_MORE_SPACE: "false"
 
@@ -168,11 +169,11 @@ jobs:
           set -euxo pipefail
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_bootfix.config"
           cat > "$FRAG" <<'EOF'
-          # redwood bootfix v3: 对齐出厂 crDroid /proc/config.gz（同源 Scarlet 编译，组合自洽）
-          # v1: 为编译通过禁用 FBE/MODULES/MEMCG → /data 解密失败卡 logo
-          # v2: 开启 FBE 链 + MEMCG/MODULES，但 LTO_NONE → CFI 连带关闭 → 与源码不一致 → 卡 logo
-          # v3: LTO_CLANG+THINLTO+CFI_CLANG+SHADOW_CALL_STACK 整组对齐原厂（实测 0 模块，非 ABI 问题）；
-          #     MMC_CRYPTO 仍关（5.4 编译 API 不兼容，redwood 走 UFS 不受影响）
+          # redwood bootfix v4: 严格对齐 crDroid 出厂 /proc/config.gz（090632 bootloop 根因修复）
+          # v3 问题：强制 BUILD_ARM64_DT_OVERLAY=y + MACH_XIAOMI*，与 stock（overlay 关闭、无 MACH_*）不一致；
+          #   再叠加 vendor/redwood.config 引入错误驱动项 → 早期 boot panic 卡 logo。
+          # v4：仅合并 bootfix（不再 merge redwood.config）；DT overlay 关闭对齐 stock；
+          #   Scarlet dts Makefile 用补丁允许无 overlay 编译；MMC_CRYPTO 仍关（5.4 API 不兼容）。
 
           # --- 存储栈（redwood.config 错误地禁用了 MMC）---
           CONFIG_MMC=y
@@ -229,15 +230,12 @@ jobs:
           CONFIG_SHADOW_CALL_STACK=y
           CONFIG_SHADOW_CALL_STACK_VMAP=y
 
-          # --- 对齐官方关闭项，减少与出厂内核的差异 ---
+          # --- 对齐官方关闭项（090632 实机 /proc/config.gz 对照）---
+          # 基础 xiaomi-qgki_defconfig 默认 y，必须显式关闭才能对齐 stock crDroid 运行时配置
+          # CONFIG_MACH_XIAOMI is not set
+          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
           # CONFIG_QCOM_FSA4480_I2C is not set
           # CONFIG_TMPFS_XATTR is not set
-          # BUILD_ARM64_DT_OVERLAY 必须=y：Scarlet dts Makefile 强制要求 overlay，否则编译报错
-          #   "Xiaomi DT w/o overlay is undefined"。生成的 dtbo 在 AnyKernel3 pack(boot-test) 时
-          #   不打包、沿用原厂 dtbo，故仍不会刷入可能不匹配的自编译 dtbo。
-          CONFIG_BUILD_ARM64_DT_OVERLAY=y
-          CONFIG_MACH_XIAOMI=y
-          CONFIG_MACH_XIAOMI_REDWOOD=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote $(wc -l < "$FRAG") lines to redwood_bootfix.config"
@@ -252,7 +250,7 @@ jobs:
 
       - name: Extra Kernel Options
         run: |
-          echo "[OK] config via vendor/redwood.config + vendor/redwood_bootfix.config merge"
+          echo "[OK] config via vendor/redwood_bootfix.config only (v4: no redwood.config merge)"
 
       - name: Patch Kernel of Re:Kernel
         if: env.SUSFS_BOOT_TEST != 'true'
@@ -551,6 +549,49 @@ jobs:
           else:
               errors.append(f"missing {platform_h}")
 
+          # stock 关闭 BUILD_ARM64_DT_OVERLAY，但 Scarlet dts Makefile 对 MACH_XIAOMI 强制 overlay；
+          # 去掉 hard error，仅在 overlay=y 时编译 dtbo（boot-test 不刷自编译 dtbo，沿用 stock dtbo）。
+          dt_mk = root / "arch/arm64/boot/dts/vendor/qcom/Makefile"
+          if dt_mk.is_file():
+              text = dt_mk.read_text()
+              orig = text
+              old_block = (
+                  "ifeq ($(CONFIG_MACH_XIAOMI), y)\n"
+                  "ifneq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n"
+                  "$(error Xiaomi DT w/o overlay is undefined!!!)\n"
+                  "endif\n"
+                  "\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_LISA) += lisa-sm7325-overlay.dtbo\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_REDWOOD) += redwood-sm7325-overlay.dtbo\n"
+                  "\n"
+                  "lisa-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "\n"
+                  "else"
+              )
+              new_block = (
+                  "ifeq ($(CONFIG_MACH_XIAOMI), y)\n"
+                  "ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_LISA) += lisa-sm7325-overlay.dtbo\n"
+                  "dtbo-$(CONFIG_MACH_XIAOMI_REDWOOD) += redwood-sm7325-overlay.dtbo\n"
+                  "\n"
+                  "lisa-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                  "endif\n"
+                  "\n"
+                  "else"
+              )
+              if old_block in text:
+                  text = text.replace(old_block, new_block, 1)
+                  dt_mk.write_text(text)
+                  print("[+] dts Makefile: allow Xiaomi build without BUILD_ARM64_DT_OVERLAY")
+              elif "Xiaomi DT w/o overlay is undefined" not in text:
+                  print("[=] dts Makefile: Xiaomi overlay guard already patched")
+              else:
+                  errors.append("dts Makefile: cannot patch Xiaomi overlay hard error")
+          else:
+              errors.append(f"missing {dt_mk}")
+
           # Scarlet 把 shrinker_list 的锁重构成 shrinker_rwlock，但 #ifdef CONFIG_MEMCG 块内
           # 操作 shrinker_idr 的代码（prealloc/unregister_memcg_shrinker、shrink_slab_memcg）
           # 仍用 shrinker_rwsem 且声明被误删 → 开 MEMCG 即报 undeclared。该路径持锁期间会睡眠
@@ -615,6 +656,8 @@ jobs:
           must "CONFIG_SCSI_UFS_CRYPTO_QTI=y"
           grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop on redwood)"
           grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
+          grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (match stock dtbo path)"
+          grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "CONFIG_MACH_XIAOMI must not be set (stock uses ARCH_YUPIK only)"
           grep -q "^# CONFIG_MMC_CRYPTO is not set" "$CFG" || fail "MMC_CRYPTO must stay disabled (5.4 compile API mismatch; UFS FBE unaffected)"
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
             grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CFG" && fail "boot-test must not force CONFIG_KSU_MANUAL_HOOK (Scarlet native hooks)"
