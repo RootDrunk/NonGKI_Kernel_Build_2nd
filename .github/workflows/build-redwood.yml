@@ -496,6 +496,28 @@ jobs:
           else:
               errors.append(f"missing {platform_h}")
 
+          # Scarlet 把 shrinker_list 的锁重构成 shrinker_rwlock，但 #ifdef CONFIG_MEMCG 块内
+          # 操作 shrinker_idr 的代码（prealloc/unregister_memcg_shrinker、shrink_slab_memcg）
+          # 仍用 shrinker_rwsem 且声明被误删 → 开 MEMCG 即报 undeclared。该路径持锁期间会睡眠
+          # （do_shrink_slab），必须用可睡眠的 rwsem，故补回声明而非改成自旋的 rwlock。
+          vmscan = root / "mm/vmscan.c"
+          if vmscan.is_file():
+              text = vmscan.read_text()
+              decl = "static DECLARE_RWSEM(shrinker_rwsem);"
+              anchor = "static DEFINE_RWLOCK(shrinker_rwlock);"
+              if decl in text:
+                  print("[=] vmscan.c: shrinker_rwsem already declared")
+              elif "shrinker_rwsem" not in text:
+                  print("[=] vmscan.c: no shrinker_rwsem reference (nothing to fix)")
+              elif anchor in text:
+                  text = text.replace(anchor, anchor + "\n" + decl, 1)
+                  vmscan.write_text(text)
+                  print("[+] vmscan.c: re-declared shrinker_rwsem for MEMCG idr block")
+              else:
+                  errors.append("vmscan.c: cannot find shrinker_rwlock anchor for shrinker_rwsem decl")
+          else:
+              errors.append(f"missing {vmscan}")
+
           if errors:
               print("!! redwood compile fixes FAILED:")
               for e in errors:
