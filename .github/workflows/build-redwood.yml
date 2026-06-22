@@ -57,8 +57,8 @@ env:
   PACK_METHOD: "Anykernel3"
   PACK_KMODULES: "false"
 
-  # Scarlet 自带 drivers/kernelsu 目录；用 manual 并在 build-ready 后做校验，避免仍编进旧版 ksuver
-  KERNELSU_METHOD: "manual"
+  # 阶段1 boot-test：build-ready 后恢复 Scarlet 原生 KSU（能开机）；勿整树替换成 ReSukiSU main（5.4 bootloop）
+  KERNELSU_METHOD: "shell"
   KERNELSU_SUS_PATCH: "false"
 
   PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches"
@@ -107,39 +107,28 @@ jobs:
       - name: Get neccssary tools
         uses: ./.github/workflows/build-ready
 
-      - name: Verify ReSukiSU replaces Scarlet bundled KernelSU
+      - name: Restore Scarlet native KernelSU (boot-test only)
+        if: env.SUSFS_BOOT_TEST == 'true'
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/device_kernel"
-          KSU_LINK="drivers/kernelsu"
-
-          if [ -d "$KSU_LINK" ] && [ ! -L "$KSU_LINK" ]; then
-            echo "[!] Scarlet still has real directory at $KSU_LINK — removing"
-            rm -rf "$KSU_LINK"
-          fi
-
-          if [ ! -e "$KSU_LINK/core/init.c" ]; then
-            if [ ! -d KernelSU/kernel ]; then
-              echo "[ERROR] KernelSU/kernel missing after build-ready"
-              exit 1
-            fi
-            ln -sfn "$(realpath --relative-to=drivers KernelSU/kernel)" "$KSU_LINK"
-          fi
-
-          ls -la "$KSU_LINK"
-          readlink "$KSU_LINK" || true
-
-          if [ -f "$KSU_LINK/ksu.c" ] && grep -q 'ksuver' "$KSU_LINK/ksu.c"; then
-            echo "[ERROR] still Scarlet bundled KSU (ksu.c + ksuver log format)"
+          rm -rf KernelSU KernelSU-Next
+          git checkout -- drivers/kernelsu
+          HOOK_FILES=(
+            fs/exec.c fs/read_write.c fs/open.c fs/stat.c fs/devpts/inode.c
+            fs/namei.c drivers/input/input.c drivers/tty/pty.c
+            security/selinux/hooks.c kernel/reboot.c kernel/sys.c
+          )
+          for f in "${HOOK_FILES[@]}"; do
+            git checkout -- "$f"
+          done
+          DEFCFG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          sed -i '/^CONFIG_KSU_MANUAL_HOOK=/d' "$DEFCFG" || true
+          if [ ! -f drivers/kernelsu/ksu.c ]; then
+            echo "[ERROR] Scarlet drivers/kernelsu not restored"
             exit 1
           fi
-
-          grep -q 'driver version' "$KSU_LINK/core/init.c" || {
-            echo "[ERROR] $KSU_LINK/core/init.c is not ReSukiSU main"
-            exit 1
-          }
-
-          echo "[OK] drivers/kernelsu points to ReSukiSU (expect dmesg: driver version, not ksuver)"
+          echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver ~32507, can boot)"
 
       - name: Write redwood bootfix fragment
         run: |
@@ -175,6 +164,7 @@ jobs:
         uses: ./.github/workflows/patch-susfs
 
       - name: Patch for no-kprobe
+        if: env.SUSFS_BOOT_TEST != 'true'
         uses: ./.github/workflows/patch-no-kprobe
 
       - name: Extra Kernel Options
