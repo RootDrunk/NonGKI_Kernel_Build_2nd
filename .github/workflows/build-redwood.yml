@@ -169,11 +169,24 @@ jobs:
       - name: Install redwood stock config (v6)
         run: |
           set -euxo pipefail
-          SRC="$GITHUB_WORKSPACE/configs/redwood_stock.config"
-          if [[ ! -f "$SRC" ]]; then
-            echo "[ERROR] missing configs/redwood_stock.config in fork repo"
-            echo "  Copy from: autonomous-agent/android/kernel-build/configs/redwood_stock.config"
-            echo "  To fork:   configs/redwood_stock.config (repo root, NOT under .github/)"
+          SRC=""
+          for candidate in \
+            "$GITHUB_WORKSPACE/configs/redwood_stock.config" \
+            "$GITHUB_WORKSPACE/patches/redwood/redwood_stock.config"; do
+            if [[ -f "$candidate" ]]; then
+              SRC="$candidate"
+              echo "[i] found stock config: $candidate"
+              break
+            fi
+          done
+          if [[ -z "$SRC" ]]; then
+            echo "[ERROR] missing redwood_stock.config in fork repo"
+            echo "  Upload ONE of these paths (pick either):"
+            echo "    configs/redwood_stock.config"
+            echo "    patches/redwood/redwood_stock.config   ← fork 已有 patches/redwood/，推荐"
+            echo "  Local file:"
+            echo "    autonomous-agent/android/kernel-build/configs/redwood_stock.config"
+            echo "  GitHub: Add file → Upload → commit to mainline branch"
             exit 1
           fi
           DST="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock.config"
