@@ -180,8 +180,10 @@ jobs:
           # --- 对齐官方关闭项，减少与出厂内核的差异 ---
           # CONFIG_QCOM_FSA4480_I2C is not set
           # CONFIG_TMPFS_XATTR is not set
-          # 不在内核内生成 dtbo overlay：沿用设备原厂 dtbo，避免 AnyKernel3 刷入不匹配 dtbo → bootloop
-          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
+          # BUILD_ARM64_DT_OVERLAY 必须=y：Scarlet dts Makefile 强制要求 overlay，否则编译报错
+          #   "Xiaomi DT w/o overlay is undefined"。生成的 dtbo 在 AnyKernel3 pack(boot-test) 时
+          #   不打包、沿用原厂 dtbo，故仍不会刷入可能不匹配的自编译 dtbo。
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
           CONFIG_MACH_XIAOMI=y
           CONFIG_MACH_XIAOMI_REDWOOD=y
           EOF
