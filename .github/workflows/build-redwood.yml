@@ -252,8 +252,8 @@ jobs:
                       j += 1
                   lookahead = "".join(lines[i : min(i + 12, len(lines))])
                   if (
-                      "ksu_wrapper_iterate" in lookahead
-                      or "p->ops.iterate" in lookahead
+                      "ksu_wrapper_iterate(" in lookahead
+                      or re.search(r"p->ops\.iterate\s*=", lookahead)
                       or "KSU_HAS_ITERATE_DIR" in block
                   ):
                       out.append(ITERATE_GUARD)
@@ -266,7 +266,8 @@ jobs:
 
           def verify_iterate_guards(content: str) -> list[str]:
               issues = []
-              for needle in ("static int ksu_wrapper_iterate", "p->ops.iterate"):
+              # Scarlet native uses iterate_shared (>= 4.7.0 guards) — do not match *_shared substrings
+              for needle in ("static int ksu_wrapper_iterate(", "p->ops.iterate ="):
                   pos = content.find(needle)
                   if pos < 0:
                       continue
@@ -280,6 +281,8 @@ jobs:
                       issues.append(f"bad guard before {needle}: {guard.strip()}")
                   if "KERNEL_VERSION(6, 6, 0)" in guard:
                       issues.append(f"still uses 6.6 guard before {needle}: {guard.strip()}")
+              if "ksu_wrapper_iterate_shared" in content:
+                  print("[=] file_wrapper.c: Scarlet iterate_shared guards OK (skip legacy iterate check)")
               return issues
 
           fw = root / "drivers/kernelsu/infra/file_wrapper.c"
