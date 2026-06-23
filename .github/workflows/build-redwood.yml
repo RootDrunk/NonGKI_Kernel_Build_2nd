@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.21 修复：stock 有 CONFIG_PINCTRL_REDWOOD（OEM）但 Scarlet Kconfig 无此符号 → olddefconfig 丢弃；校验改 PINCTRL_YUPIK
 # v6.0.20 修复：v6.0.19 源文件 icnss_ipc_log_defs.c 与 Makefile ipc_log_defs.o 文件名不匹配 → No rule to make target
 # v6.0.19 修复：v6.0.18 在 DEBUG_FS=n 时编 debug.c 与 debug.h 内联桩冲突 → 改 ipc_log_defs.o 仅导出符号
 # v6.0.18 修复：ICNSS2=m + IPC_LOGGING=y 但 debug.o 仅 DEBUG_FS 时编译 → icnss_ipc_log_* modpost 失败
@@ -267,6 +268,9 @@ jobs:
           #
           # stock LEDS_QTI_FLASH=m；techpack cam_flash 链入 vmlinux 且 IS_ENABLED(LEDS_QTI_FLASH) 调用 qti_flash_led_set_param
           CONFIG_LEDS_QTI_FLASH=y
+          #
+          # stock /proc/config.gz 有 PINCTRL_REDWOOD/SM7325（OEM 符号）；Scarlet 树仅 PINCTRL_YUPIK → olddefconfig 后以此为准
+          CONFIG_PINCTRL_YUPIK=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
@@ -1573,10 +1577,10 @@ jobs:
           must "CONFIG_SCSI_UFS_CRYPTO=y"
           must "CONFIG_SCSI_UFS_CRYPTO_QTI=y"
           must "CONFIG_ARCH_YUPIK=y"
-          must "CONFIG_PINCTRL_REDWOOD=y"
+          must "CONFIG_PINCTRL_YUPIK=y"
           must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
           grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (stock dtbo path)"
-          grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set (stock uses ARCH_YUPIK/PINCTRL_REDWOOD; 101618 bootloop)"
+          grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set (stock uses ARCH_YUPIK/PINCTRL_YUPIK; 101618 bootloop)"
           grep -q "^CONFIG_MACH_XIAOMI_REDWOOD=y" "$CFG" && fail "MACH_XIAOMI_REDWOOD must not be set"
           grep -q "^CONFIG_ARCH_LAHAINA=y" "$CFG" && fail "ARCH_LAHAINA must be disabled (fixup: avoid lahaina DTB build)"
           grep -q "^CONFIG_ARCH_SHIMA=y" "$CFG" && fail "ARCH_SHIMA must be disabled (fixup: shima-gpu.dtsi DTC error)"
