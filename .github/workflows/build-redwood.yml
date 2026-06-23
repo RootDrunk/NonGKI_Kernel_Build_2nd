@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.2 修复：scarlet techpack 有 dsi_panel_get_refresh_rate 但无 get_panel → 仅 stub get_panel + lpm 补丁（v7.0.1 全删 shim 导致 undefined）
 # v7.0.1 修复：scarlet 策略 display 在 techpack 已编进 vmlinux → 跳过/移除 display link shims（duplicate dsi_panel_get_refresh_rate）
 # v7.0 策略（默认 CONFIG_STRATEGY=scarlet）：Scarlet xiaomi-qgki_defconfig + 最小 overlay；BOOT_TEST_PHASE=noks 先无 KSU 验证开机，再 ksu
 # v6.0.21 修复：stock 有 CONFIG_PINCTRL_REDWOOD（OEM）但 Scarlet Kconfig 无此符号 → olddefconfig 丢弃；校验改 PINCTRL_YUPIK
@@ -398,7 +399,6 @@ jobs:
           python3 <<'PY'
           import os
           import re
-          import subprocess
           import sys
           from pathlib import Path
 
@@ -1402,7 +1402,9 @@ jobs:
           else:
               errors.append(f"missing {ddebug}")
 
-          # v6.0.13+ display stubs — 仅 stock 策略（display 在 vendor_dlkm）；scarlet v7 techpack 已提供 dsi/get_panel
+          # v6.0.13+ / v7.0.2 display link shims
+          # stock: dsi + get_panel 桩（display 在 vendor_dlkm）
+          # scarlet: 仅 get_panel 桩（techpack 已有 dsi_panel_get_refresh_rate，树内无 get_panel 定义）
           link_shim_marker = "redwood-vmlinux-link-shims"
           link_shim_c = root / "drivers/soc/qcom/redwood_vmlinux_link_shims.c"
           lpm = root / "drivers/cpuidle/lpm-levels.c"
@@ -1430,82 +1432,76 @@ jobs:
                   "EXPORT_SYMBOL(get_panel);",
                   "",
               ])
-              if link_shim_c.is_file():
-                  existing = link_shim_c.read_text()
-                  if existing == link_shim_body:
-                      print("[=] redwood_vmlinux_link_shims.c: display stubs already correct")
-                  elif "ipa3_register_rmnet_ctl_cb" in existing:
-                      link_shim_c.write_text(link_shim_body)
-                      print(
-                          "[+] redwood_vmlinux_link_shims.c: removed IPA3 aliases "
-                          "(RMNET_IPA3 rmnet_ctl_ipa.o defines ipa3_*)"
-                      )
-                  else:
-                      link_shim_c.write_text(link_shim_body)
-                      print("[+] redwood_vmlinux_link_shims.c: refreshed display-only stubs")
-              else:
-                  link_shim_c.write_text(link_shim_body)
-                  print("[+] redwood_vmlinux_link_shims.c: display stubs (dsi_panel_get_refresh_rate/get_panel)")
-
-              if qcom_mk.is_file():
-                  mk_text = qcom_mk.read_text()
-                  mk_line = f"obj-y += redwood_vmlinux_link_shims.o  # {link_shim_marker}"
-                  if link_shim_marker in mk_text:
-                      print("[=] drivers/soc/qcom/Makefile: link shims already wired")
-                  elif mk_line not in mk_text:
-                      qcom_mk.write_text(mk_text.rstrip() + "\n" + mk_line + "\n")
-                      print("[+] drivers/soc/qcom/Makefile: build redwood_vmlinux_link_shims.o")
-                  else:
-                      print("[=] drivers/soc/qcom/Makefile: link shims line already present")
-              else:
-                  errors.append(f"missing {qcom_mk}")
-
-              if lpm.is_file():
-                  lpm_text = lpm.read_text()
-                  if lpm_marker in lpm_text:
-                      print("[=] lpm-levels.c: panel defer skip already patched")
-                  elif "return -EPROBE_DEFER" not in lpm_text and "if (active_panel) {" in lpm_text:
-                      print("[=] lpm-levels.c: panel defer already removed")
-                  else:
-                      lpm_block = re.sub(
-                          r"(\tstruct drm_panel \*active_panel = get_panel\(\);\n\n)"
-                          r"\tif \(!active_panel\)\n"
-                          r"\t\treturn -EPROBE_DEFER;\n\n"
-                          r"(\tret = drm_panel_notifier_register\(active_panel, &drm_notifier\);\n"
-                          r"\tif \(ret\)\n"
-                          r'\t\tpr_err\("Failed to register DRM panel notifier, ret=%d\\n", ret\);\n'
-                          r"\telse\n"
-                          r'\t\tpr_info\("Registered DRM panel notifier\\n"\);)',
-                          rf"\1\t/* {lpm_marker}: display in vendor_dlkm; NULL panel must not block cpuidle */\n"
-                          r"\tif (active_panel) {\n"
-                          r"\2\n"
-                          r"\t} else {\n"
-                          r'\t\tpr_info("lpm: no panel in vmlinux, skip DRM notifier\\n");\n'
-                          r"\t}",
-                          lpm_text,
-                          count=1,
-                      )
-                      if lpm_block == lpm_text:
-                          errors.append("lpm-levels.c: panel defer block regex did not match")
-                      else:
-                          lpm.write_text(lpm_block)
-                          print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
-              else:
-                  errors.append(f"missing {lpm}")
           else:
-              if link_shim_c.is_file():
-                  link_shim_c.unlink()
-                  print("[+] removed redwood_vmlinux_link_shims.c (scarlet: dsi in techpack vmlinux)")
-              if qcom_mk.is_file():
-                  cleaned = [
-                      ln for ln in qcom_mk.read_text().splitlines()
-                      if link_shim_marker not in ln and "redwood_vmlinux_link_shims" not in ln
-                  ]
-                  qcom_mk.write_text("\n".join(cleaned).rstrip() + "\n")
-                  print("[+] drivers/soc/qcom/Makefile: removed link shims (scarlet v7)")
-              if lpm.is_file() and lpm_marker in lpm.read_text():
-                  subprocess.run(["git", "checkout", "HEAD", "--", str(lpm)], check=True)
-                  print("[+] lpm-levels.c: reverted panel defer shim (scarlet v7)")
+              link_shim_body = "\n".join([
+                  "// SPDX-License-Identifier: GPL-2.0",
+                  f"/* {link_shim_marker}: scarlet techpack 已有 dsi_panel_get_refresh_rate；树内无 get_panel */",
+                  "",
+                  "#include <linux/export.h>",
+                  "#include <drm/drm_panel.h>",
+                  "",
+                  "struct drm_panel *get_panel(void)",
+                  "{",
+                  "\treturn NULL;",
+                  "}",
+                  "EXPORT_SYMBOL(get_panel);",
+                  "",
+              ])
+
+          if link_shim_c.is_file() and link_shim_c.read_text() == link_shim_body:
+              print("[=] redwood_vmlinux_link_shims.c: already correct")
+          else:
+              link_shim_c.write_text(link_shim_body)
+              if use_display_shims:
+                  print("[+] redwood_vmlinux_link_shims.c: display stubs (dsi_panel_get_refresh_rate/get_panel)")
+              else:
+                  print("[+] redwood_vmlinux_link_shims.c: get_panel-only stub (scarlet v7.0.2)")
+
+          if qcom_mk.is_file():
+              mk_text = qcom_mk.read_text()
+              mk_line = f"obj-y += redwood_vmlinux_link_shims.o  # {link_shim_marker}"
+              if link_shim_marker in mk_text:
+                  print("[=] drivers/soc/qcom/Makefile: link shims already wired")
+              elif mk_line not in mk_text:
+                  qcom_mk.write_text(mk_text.rstrip() + "\n" + mk_line + "\n")
+                  print("[+] drivers/soc/qcom/Makefile: build redwood_vmlinux_link_shims.o")
+              else:
+                  print("[=] drivers/soc/qcom/Makefile: link shims line already present")
+          else:
+              errors.append(f"missing {qcom_mk}")
+
+          if lpm.is_file():
+              lpm_text = lpm.read_text()
+              if lpm_marker in lpm_text:
+                  print("[=] lpm-levels.c: panel defer skip already patched")
+              elif "return -EPROBE_DEFER" not in lpm_text and "if (active_panel) {" in lpm_text:
+                  print("[=] lpm-levels.c: panel defer already removed")
+              else:
+                  lpm_block = re.sub(
+                      r"(\tstruct drm_panel \*active_panel = get_panel\(\);\n\n)"
+                      r"\tif \(!active_panel\)\n"
+                      r"\t\treturn -EPROBE_DEFER;\n\n"
+                      r"(\tret = drm_panel_notifier_register\(active_panel, &drm_notifier\);\n"
+                      r"\tif \(ret\)\n"
+                      r'\t\tpr_err\("Failed to register DRM panel notifier, ret=%d\\n", ret\);\n'
+                      r"\telse\n"
+                      r'\t\tpr_info\("Registered DRM panel notifier\\n"\);)',
+                      rf"\1\t/* {lpm_marker}: get_panel stub may return NULL; must not block cpuidle */\n"
+                      r"\tif (active_panel) {\n"
+                      r"\2\n"
+                      r"\t} else {\n"
+                      r'\t\tpr_info("lpm: no panel in vmlinux, skip DRM notifier\\n");\n'
+                      r"\t}",
+                      lpm_text,
+                      count=1,
+                  )
+                  if lpm_block == lpm_text:
+                      errors.append("lpm-levels.c: panel defer block regex did not match")
+                  else:
+                      lpm.write_text(lpm_block)
+                      print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
+          else:
+              errors.append(f"missing {lpm}")
 
           # v6.0.15: fixup 关 ARCH_LAHAINA 后，dataipa/Makefile 的 LAHAINA 专用块不跑 → GSI 未编进 vmlinux
           dataipa_mk = root / "techpack/dataipa/drivers/platform/msm/Makefile"
