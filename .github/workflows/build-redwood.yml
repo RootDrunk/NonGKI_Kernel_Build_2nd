@@ -3,7 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
-# v7.0.3 修复：xiaomi-qgki_defconfig 默认 LTO_NONE → scarlet_min 强制 LTO_CLANG/CFI（与真机 /proc/config.gz 一致，关 LTO 易 bootloop）
+# v7.0.4 修复：noks 阶段 merge 显式 # CONFIG_KSU is not set（Scarlet 树 Kconfig 默认会开 KSU）
+# v7.0.3 修复：xiaomi-qgki_defconfig 默认 LTO_NONE → scarlet_min 强制 LTO_CLANG/CFI
 # v7.0.2 修复：scarlet techpack 有 dsi_panel_get_refresh_rate 但无 get_panel → 仅 stub get_panel + lpm 补丁（v7.0.1 全删 shim 导致 undefined）
 # v7.0.1 修复：scarlet 策略 display 在 techpack 已编进 vmlinux → 跳过/移除 display link shims（duplicate dsi_panel_get_refresh_rate）
 # v7.0 策略（默认 CONFIG_STRATEGY=scarlet）：Scarlet xiaomi-qgki_defconfig + 最小 overlay；BOOT_TEST_PHASE=noks 先无 KSU 验证开机，再 ksu
@@ -160,8 +161,8 @@ jobs:
       - name: Get neccssary tools
         uses: ./.github/workflows/build-ready
 
-      - name: Restore Scarlet native KernelSU (boot-test only)
-        if: env.SUSFS_BOOT_TEST == 'true'
+      - name: Restore Scarlet native KernelSU (boot-test ksu phase only)
+        if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'ksu'
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/device_kernel"
@@ -205,6 +206,34 @@ jobs:
             exit 1
           fi
           echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver 32486)"
+
+      - name: Strip ReSukiSU for noks boot-test
+        if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          rm -rf KernelSU KernelSU-Next
+          rm -f arch/${{ env.KERNEL_ARCH }}/configs/vendor/kernelsu.config
+          rm -f arch/${{ env.KERNEL_ARCH }}/configs/vendor/*kernelsu*.config
+          rm -rf drivers/kernelsu
+          git checkout HEAD -- drivers/kernelsu
+          HOOK_FILES=(
+            fs/exec.c fs/read_write.c fs/open.c fs/stat.c fs/devpts/inode.c
+            fs/namei.c drivers/input/input.c drivers/tty/pty.c
+            security/selinux/hooks.c security/selinux/selinuxfs.c
+            kernel/reboot.c kernel/sys.c
+          )
+          for f in "${HOOK_FILES[@]}"; do
+            git checkout HEAD -- "$f" 2>/dev/null || true
+          done
+          DEFCFG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          sed -i '/^CONFIG_KSU=/d' "$DEFCFG" || true
+          sed -i '/^CONFIG_KSU_MANUAL_HOOK=/d' "$DEFCFG" || true
+          if grep -q 'ksu_handle_selinux_setprocattr' security/selinux/hooks.c; then
+            echo "[ERROR] hooks.c still has ReSukiSU ksu_handle_selinux_setprocattr"
+            exit 1
+          fi
+          echo "[OK] noks boot-test: ReSukiSU stripped, CONFIG_KSU off via redwood_noks.config"
 
       - name: Install redwood stock config (v6 legacy)
         if: env.CONFIG_STRATEGY == 'stock'
@@ -313,6 +342,19 @@ jobs:
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
 
+      - name: Write redwood noks overlay (boot-test noks phase)
+        if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
+        run: |
+          set -euxo pipefail
+          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_noks.config"
+          cat > "$FRAG" <<'EOF'
+          # v7 noks: 先验证无 KSU 自定义内核能开机（Scarlet 源码 Kconfig 易默认 CONFIG_KSU=y）
+          # CONFIG_KSU is not set
+          # CONFIG_KSU_MANUAL_HOOK is not set
+          EOF
+          sed -i 's/^          //' "$FRAG"
+          echo "[OK] wrote redwood_noks.config (explicit KSU off)"
+
       - name: Write redwood KSU overlay (boot-test ksu phase)
         if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'ksu'
         run: |
@@ -337,8 +379,9 @@ jobs:
               echo "ROM_TEXT=crdroid_a16_ksu" >> "$GITHUB_ENV"
               echo "[OK] merge: scarlet min + ksu (boot-test phase ksu)"
             elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+              MERGE="${MERGE},vendor/redwood_noks.config"
               echo "ROM_TEXT=crdroid_a16_noks" >> "$GITHUB_ENV"
-              echo "[OK] merge: scarlet min only (boot-test phase noks, no KSU)"
+              echo "[OK] merge: scarlet min + noks (KSU off)"
             else
               echo "ROM_TEXT=crdroid_a16" >> "$GITHUB_ENV"
               echo "[OK] merge: scarlet min (phase-2 ReSukiSU via build-ready)"
