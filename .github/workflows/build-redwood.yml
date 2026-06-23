@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.19 修复：v6.0.18 在 DEBUG_FS=n 时编 debug.c 与 debug.h 内联桩冲突 → 改 ipc_log_defs.o 仅导出符号
 # v6.0.18 修复：ICNSS2=m + IPC_LOGGING=y 但 debug.o 仅 DEBUG_FS 时编译 → icnss_ipc_log_* modpost 失败
 # v6.0.17 修复：cam_flash 链入 vmlinux 但 stock LEDS_QTI_FLASH=m → qti_flash_led_set_param 链接失败
 # v6.0.16 修复：v6.0.15 启用 RMNET_IPA3 后 rmnet_ctl_ipa.o 已有 ipa3_* → 去掉 shim 里重复别名
@@ -1472,32 +1473,55 @@ jobs:
           else:
               errors.append(f"missing {dataipa_mk}")
 
-          # v6.0.18: stock IPC_LOGGING=y + DEBUG_FS=n → icnss_pr_* 引用 icnss_ipc_log_* 但 debug.o 未编进 icnss2.ko
+          # v6.0.19: IPC_LOGGING=y + DEBUG_FS=n → 仅 stub 四个 icnss_ipc_log_* 符号（勿编 debug.c，会与 debug.h 内联桩冲突）
           icnss_mk = root / "drivers/soc/qcom/icnss2/Makefile"
-          icnss_marker = "redwood-icnss2-ipc-log-debug"
+          icnss_defs_c = root / "drivers/soc/qcom/icnss2/icnss_ipc_log_defs.c"
+          defs_marker = "redwood-icnss2-ipc-log-defs"
+          old_debug_marker = "redwood-icnss2-ipc-log-debug"
+
+          defs_body = "\n".join([
+              "// SPDX-License-Identifier: GPL-2.0",
+              f"/* {defs_marker}: IPC_LOGGING symbols when DEBUG_FS=n (avoid debug.c inline clash) */",
+              "",
+              "void *icnss_ipc_log_context;",
+              "void *icnss_ipc_log_long_context;",
+              "void *icnss_ipc_log_smp2p_context;",
+              "void *icnss_ipc_soc_wake_context;",
+              "",
+          ])
+          if icnss_defs_c.is_file() and icnss_defs_c.read_text() == defs_body:
+              print("[=] icnss_ipc_log_defs.c: already correct")
+          else:
+              icnss_defs_c.write_text(defs_body)
+              print("[+] icnss_ipc_log_defs.c: IPC log symbol stubs for ICNSS2 modpost")
+
           if icnss_mk.is_file():
               text = icnss_mk.read_text()
-              if icnss_marker in text:
-                  print("[=] icnss2/Makefile: IPC_LOGGING debug.o rule already patched")
+              bad_block = "\n".join([
+                  f"# {old_debug_marker}: IPC_LOGGING macros need icnss_ipc_log_* from debug.o",
+                  "ifneq ($(filter y,$(CONFIG_DEBUG_FS) $(CONFIG_IPC_LOGGING)),)",
+                  "icnss2-y += debug.o",
+                  "endif",
+              ])
+              good_block = "\n".join([
+                  "icnss2-$(CONFIG_DEBUG_FS) += debug.o",
+                  f"# {defs_marker}: IPC_LOGGING=y + DEBUG_FS=n → provide icnss_ipc_log_* without debug.c",
+                  "ifneq ($(CONFIG_DEBUG_FS),y)",
+                  "icnss2-$(CONFIG_IPC_LOGGING) += ipc_log_defs.o",
+                  "endif",
+              ])
+              if defs_marker in text and "ipc_log_defs.o" in text:
+                  print("[=] icnss2/Makefile: ipc_log_defs rule already patched")
+              elif bad_block in text:
+                  icnss_mk.write_text(text.replace(bad_block, good_block, 1))
+                  print("[+] icnss2/Makefile: v6.0.18 debug.o rule → ipc_log_defs.o stubs")
+              elif "icnss2-$(CONFIG_DEBUG_FS) += debug.o" in text:
+                  anchor = "icnss2-$(CONFIG_DEBUG_FS) += debug.o"
+                  insert = anchor + "\n" + "\n".join(good_block.split("\n")[1:])
+                  icnss_mk.write_text(text.replace(anchor, insert, 1))
+                  print("[+] icnss2/Makefile: add ipc_log_defs.o for IPC_LOGGING without DEBUG_FS")
               else:
-                  old_rule = "icnss2-$(CONFIG_DEBUG_FS) += debug.o"
-                  new_rule = "\n".join([
-                      f"# {icnss_marker}: IPC_LOGGING macros need icnss_ipc_log_* from debug.o",
-                      "ifneq ($(filter y,$(CONFIG_DEBUG_FS) $(CONFIG_IPC_LOGGING)),)",
-                      "icnss2-y += debug.o",
-                      "endif",
-                  ])
-                  if old_rule not in text:
-                      if "icnss2-y += debug.o" in text:
-                          print("[=] icnss2/Makefile: debug.o rule already uses IPC_LOGGING guard")
-                      else:
-                          errors.append("icnss2/Makefile: CONFIG_DEBUG_FS debug.o anchor not found")
-                  else:
-                      icnss_mk.write_text(text.replace(old_rule, new_rule, 1))
-                      print(
-                          "[+] icnss2/Makefile: build debug.o when IPC_LOGGING or DEBUG_FS "
-                          "(fix icnss_ipc_log_* modpost)"
-                      )
+                  errors.append("icnss2/Makefile: CONFIG_DEBUG_FS debug.o anchor not found")
           else:
               errors.append(f"missing {icnss_mk}")
 
