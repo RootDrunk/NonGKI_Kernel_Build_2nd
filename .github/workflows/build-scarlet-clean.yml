@@ -83,13 +83,25 @@ jobs:
           ARGS="ARCH=arm64 O=out LLVM=1 LLVM_IAS=1 CC=clang"
           make $ARGS "$DEFCONFIG"
 
+          # ---- 对齐设备 LTO/CFI/SHADOW_CALL_STACK ----
+          # xiaomi-qgki_defconfig 是 savedefconfig，LTO/CFI 由 Scarlet 的 build.config.msm.lahaina
+          # 构建链（generate_defconfig.sh 合并片段）注入；plain make 拿不到，会退回 LTO_NONE。
+          # 这里按设备 /proc/config.gz 的真实值显式开启（5.4 老式命名：LTO_CLANG + THINLTO）。
+          echo "===== 启用 LTO/CFI/SCS（对齐设备）====="
+          ./scripts/config --file out/.config \
+            -e LTO -e LTO_CLANG -e THINLTO -d LTO_NONE \
+            -e SHADOW_CALL_STACK -e SHADOW_CALL_STACK_VMAP \
+            -e CFI_CLANG -e CFI_CLANG_SHADOW -d CFI_PERMISSIVE
+          make $ARGS olddefconfig
+
           echo "===== .config 关键项校验 ====="
-          # 1) 必须启用 Clang LTO（与设备一致）；若为 LTO_NONE 说明 clang 未满足 LTO 依赖
-          #    → 触发即说明需升级到 Scarlet 完整 build.config 流程，先不出包以免浪费一次刷机
+          # 1) LTO 必须实际生效（clang21 满足依赖应能 stick）；否则说明依赖未满足，先不出包
           if grep -q '^CONFIG_LTO_NONE=y' out/.config; then
-            echo "[ERROR] CONFIG_LTO_NONE=y —— clang21 仍未开启 LTO，需检查工具链/改走 build.config"; exit 1
+            echo "[ERROR] CONFIG_LTO_NONE=y —— 显式开启后仍回退，依赖未满足（检查 clang/arch）"; exit 1
           fi
-          grep -E '^CONFIG_LTO_CLANG(_THIN)?=y' out/.config || { echo "[ERROR] 缺少 LTO_CLANG"; exit 1; }
+          grep -q '^CONFIG_LTO_CLANG=y' out/.config || { echo "[ERROR] 缺少 LTO_CLANG"; exit 1; }
+          grep -q '^CONFIG_CFI_CLANG=y' out/.config && echo "[OK] CFI_CLANG=y" || echo "[WARN] CFI_CLANG 未开（与设备不一致，可能影响模块加载）"
+          grep -q '^CONFIG_SHADOW_CALL_STACK=y' out/.config && echo "[OK] SHADOW_CALL_STACK=y" || echo "[WARN] SHADOW_CALL_STACK 未开"
           # 2) 确认保留官方默认 KSU（XXKSU 在树内），这是最忠实复刻
           grep -q '^CONFIG_KSU=y' out/.config && echo "[OK] CONFIG_KSU=y（Scarlet 官方默认，含 KernelSU）" || echo "[WARN] 未发现 CONFIG_KSU=y（与官方 defconfig 不符）"
           # 3) 核心项与设备一致性
