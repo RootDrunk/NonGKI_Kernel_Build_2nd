@@ -60,8 +60,10 @@ env:
   KERNEL_SOURCE : "https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git"
   KERNEL_BRANCH : "redwood"
 
-  CLANG_SOURCE : "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git"
-  CLANG_BRANCH : "lineage-20.0"
+  # clang14(r416183b) 编 Scarlet 5.4 易触发 crypto.c 硬错误；AOSP clang20(r547379) 已在本机 v5.0 验证
+  CLANG_SOURCE : "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+  CLANG_BRANCH : "mirror-goog-main-prebuilts"
+  CLANG_DIR_NAME : "clang-r547379"
 
   GCC_GNU : false
   GCC_64_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git"
@@ -83,9 +85,9 @@ env:
 
   # 两阶段编译开关（见文档 §9）:
   #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false
-  #   阶段2 满血版:    SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true   → ReSukiSU + SUSFS
-  SUSFS_BOOT_TEST: "true"
-  SUSFS_ENABLE : false
+  #   阶段3 满血版:    SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true   → ReSukiSU + SUSFS
+  SUSFS_BOOT_TEST: "false"
+  SUSFS_ENABLE : true
 
   KERNELSU_SOURCE : ""
   KERNELSU_BRANCH : ""
@@ -101,7 +103,7 @@ env:
 
   NEED_DTBO : false
   NEED_SAFE_DTBO : false
-  ROM_TEXT : "crdroid_a16_noks"
+  ROM_TEXT : "crdroid_a16_susfs"
 
   PYTHON_VERSION: "3"
   PACK_METHOD: "Anykernel3"
@@ -109,7 +111,7 @@ env:
 
   # 阶段1 boot-test：build-ready 后恢复 Scarlet 原生 KSU（能开机）；勿整树替换成 ReSukiSU main（5.4 bootloop）
   KERNELSU_METHOD: "shell"
-  KERNELSU_SUS_PATCH: "false"
+  KERNELSU_SUS_PATCH: "true"
 
   PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches"
   PATCHES_BRANCH: "mi_kernel"
@@ -154,6 +156,22 @@ jobs:
 
       - name: Compilation environment preparation
         uses: ./.github/workflows/build-env
+
+      - name: Override toolchain to AOSP clang 20 (r547379 sparse)
+        run: |
+          set -euxo pipefail
+          rm -rf clang-custom clang-sparse
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_SOURCE }}" clang-sparse
+          cd clang-sparse
+          git sparse-checkout set "${{ env.CLANG_DIR_NAME }}"
+          test -x "${{ env.CLANG_DIR_NAME }}/bin/clang" || { echo "[ERROR] clang missing"; ls -la "${{ env.CLANG_DIR_NAME }}/bin" || true; exit 1; }
+          mkdir -p ../clang-custom
+          cp -a "${{ env.CLANG_DIR_NAME }}"/* ../clang-custom/
+          cd ..
+          rm -rf clang-sparse
+          clang-custom/bin/clang --version
+          echo "[OK] clang-custom -> AOSP ${{ env.CLANG_DIR_NAME }}"
 
       # build-ready 用 KERNELSU_AUTO_GET=true + AUTO_FORK=resukisu 拉取 ReSukiSU（已验证可编译）。
       #   注意：KERNELSU_AUTO_GET=false 会走 KERNELSU_MANUAL → curl "$KERNELSU_SOURCE"(空) → URL malformed。
@@ -277,8 +295,13 @@ jobs:
           # v7 scarlet-minimal — 仅 crDroid sideload 必需项；其余保持 xiaomi-qgki_defconfig（接近 Scarlet 官方 boot.img）
           # CONFIG_MACH_XIAOMI is not set
           # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
-          CONFIG_LOCALVERSION="-Scarlet-v5.1-beta1"
+          CONFIG_LOCALVERSION="-Scarlet-v5.0"
           # CONFIG_LOCALVERSION_AUTO is not set
+          #
+          # v5.0 crypto.c 与 blk API 不兼容；/data 在 UFS(SCSI_UFS_CRYPTO)，关 MMC_CRYPTO 无害
+          # CONFIG_MMC_CRYPTO is not set
+          # CONFIG_MMC_CQHCI_CRYPTO is not set
+          # CONFIG_MMC_CQHCI_CRYPTO_QTI is not set
           #
           # defconfig 未开 LTO → olddefconfig 留 LTO_NONE=y；真机 Scarlet boot.img 为 LTO_CLANG+CFI
           CONFIG_LTO=y
@@ -416,6 +439,24 @@ jobs:
       - name: Patch Kernel of SUSFS
         if: env.SUSFS_ENABLE == 'true'
         uses: ./.github/workflows/patch-susfs
+
+      - name: Apply local redwood SUSFS fixed patch
+        if: env.SUSFS_ENABLE == 'true'
+        run: |
+          set -euxo pipefail
+          PATCH="$GITHUB_WORKSPACE/patches/redwood/susfs_fixed.patch"
+          if [[ ! -f "$PATCH" ]]; then
+            echo "[WARN] no patches/redwood/susfs_fixed.patch in fork — skip"
+            exit 0
+          fi
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          patch -p1 < "$PATCH" || true
+          if find . -name '*.rej' | grep -q .; then
+            echo "[WARN] susfs_fixed.patch left .rej files (SKIP_PATCH=true continues)"
+            find . -name '*.rej' | head -20
+          else
+            echo "[OK] susfs_fixed.patch applied cleanly"
+          fi
 
       - name: Patch for no-kprobe
         if: env.SUSFS_BOOT_TEST != 'true'
@@ -1691,6 +1732,8 @@ jobs:
             grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (crDroid dtbo path)"
             grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set"
             grep -q 'CONFIG_LOCALVERSION="-Scarlet' "$CFG" || fail "LOCALVERSION should match Scarlet (redwood_scarlet_min.config)"
+            grep -q '^CONFIG_MMC_CRYPTO=y' "$CFG" && fail "MMC_CRYPTO must be off (crypto.c compile/boot)"
+            must "CONFIG_SCSI_UFS_CRYPTO=y"
             must "CONFIG_LTO_CLANG=y"
             must "CONFIG_THINLTO=y"
             must "CONFIG_CFI_CLANG=y"
@@ -1816,15 +1859,15 @@ jobs:
           grep -q 'write_boot;' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing write_boot"; exit 1; }
 
           mkdir -p tmp
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
-            # boot-test：只刷未压缩 Image，禁止 Image.gz-dtb（自带 DTB 与 stock dtbo 冲突 → bootloop）
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" || "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
+            # boot-test / SUSFS：只刷未压缩 Image，禁止 Image.gz-dtb（自带 DTB 与 stock dtbo 冲突 → bootloop）
             if [[ ! -f "$IMAGE_DIR/Image" ]]; then
               echo "[ERROR] boot-test requires out/.../boot/Image (uncompressed)"
               ls -la "$IMAGE_DIR" || true
               exit 1
             fi
             cp -fp "$IMAGE_DIR/Image" tmp/
-            echo "[+] boot-test pack: Image only (no Image.gz-dtb, no dtbo)"
+            echo "[+] redwood pack: Image only (no Image.gz-dtb, no dtbo)"
           else
             if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
               cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/
@@ -1890,12 +1933,12 @@ jobs:
           [[ "$ZSZ" -gt 10000000 ]] || { echo "[ERROR] zip too small: ${ZSZ} bytes"; exit 1; }
           LIST=$(7za l "$ZIP")
           echo "$LIST" | grep -qE 'Image(\.gz)?(-dtb)?$' || { echo "[ERROR] zip has no kernel Image"; exit 1; }
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" || "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
             if echo "$LIST" | grep -qi 'dtbo'; then
-              echo "[ERROR] boot-test zip must NOT contain dtbo (use stock dtbo)"
+              echo "[ERROR] zip must NOT contain dtbo (use stock dtbo)"
               exit 1
             fi
-            echo "[OK] boot-test zip: kernel only, no dtbo"
+            echo "[OK] zip: kernel Image only, no dtbo"
           fi
           rm -rf /tmp/ak3verify && mkdir -p /tmp/ak3verify
           7za e -y -o/tmp/ak3verify "$ZIP" anykernel.sh >/dev/null
@@ -1903,8 +1946,8 @@ jobs:
           grep -q 'do.modules=0' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh must have do.modules=0"; exit 1; }
           grep -q 'init.tuna.rc' /tmp/ak3verify/anykernel.sh && { echo "[ERROR] zip anykernel.sh contains tuna template patches"; exit 1; }
           grep -q 'write_boot;' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh missing write_boot"; exit 1; }
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
-            echo "$LIST" | grep -qE 'Image\.gz-dtb' && { echo "[ERROR] boot-test zip must not contain Image.gz-dtb"; exit 1; }
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" || "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
+            echo "$LIST" | grep -qE 'Image\.gz-dtb' && { echo "[ERROR] zip must not contain Image.gz-dtb"; exit 1; }
           fi
           echo "[OK] anykernel.sh: minimal redwood script, do.systemless=0"
           echo "[OK] artifact integrity OK: $ZIP (${ZSZ} bytes)"
