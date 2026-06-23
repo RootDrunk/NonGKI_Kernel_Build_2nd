@@ -53,11 +53,22 @@ jobs:
       - name: Fetch Scarlet kernel source @ commit
         run: |
           set -euxo pipefail
-          git clone "$KERNEL_REPO" -b "$KERNEL_BRANCH" kernel
-          cd kernel
-          git checkout "$KERNEL_COMMIT"
-          echo "[OK] kernel HEAD:"
+          # 注意：redwood 分支已回退到 v5.0(976f762)，设备跑的 v5.1-beta1(d997511b) 是游离提交，
+          #   不在 redwood 历史里 → 必须按精确 SHA 浅拉取（GitHub 允许 fetch 该 reachable SHA）。
+          mkdir kernel && cd kernel
+          git init -q
+          git remote add origin "$KERNEL_REPO"
+          if git fetch --depth=1 origin "$KERNEL_COMMIT"; then
+            git checkout -q FETCH_HEAD
+            echo "[OK] 精确复刻设备源码提交 $KERNEL_COMMIT (v5.1-beta1)"
+          else
+            echo "[WARN] 无法按 SHA 拉取 $KERNEL_COMMIT，回退 redwood 分支 HEAD (v5.0)"
+            echo "[WARN] 注意：v5.0 的 LOCALVERSION 与设备 v5.1-beta1 不同，存在 vermagic 风险"
+            git fetch --depth=1 origin "$KERNEL_BRANCH"
+            git checkout -q FETCH_HEAD
+          fi
           git --no-pager log -1 --oneline
+          grep -m1 'CONFIG_LOCALVERSION=' arch/arm64/configs/vendor/xiaomi-qgki_defconfig || true
 
       - name: Fetch AOSP clang-r563880c (sparse partial clone)
         run: |
