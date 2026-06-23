@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0 策略（默认 CONFIG_STRATEGY=scarlet）：Scarlet xiaomi-qgki_defconfig + 最小 overlay；BOOT_TEST_PHASE=noks 先无 KSU 验证开机，再 ksu
 # v6.0.21 修复：stock 有 CONFIG_PINCTRL_REDWOOD（OEM）但 Scarlet Kconfig 无此符号 → olddefconfig 丢弃；校验改 PINCTRL_YUPIK
 # v6.0.20 修复：v6.0.19 源文件 icnss_ipc_log_defs.c 与 Makefile ipc_log_defs.o 文件名不匹配 → No rule to make target
 # v6.0.19 修复：v6.0.18 在 DEBUG_FS=n 时编 debug.c 与 debug.h 内联桩冲突 → 改 ipc_log_defs.o 仅导出符号
@@ -69,8 +70,15 @@ env:
   DEFCONFIG_ORIGIN_IMAGE: ""
   DEFCONFIG_FROM_BOOT: false
 
+  # v7 配置策略（见 docs Root隐身-redwood v7）:
+  #   scarlet — Scarlet vendor/xiaomi-qgki_defconfig + redwood_scarlet_min.config（推荐，接近能开机的 Scarlet 内核）
+  #   stock   — v6 全量 redwood_stock.config merge（legacy，fixup 偏离大，易 bootloop）
+  CONFIG_STRATEGY: "scarlet"
+  # boot-test 子阶段: noks=仅重编译 Scarlet defconfig；ksu=叠加 CONFIG_KSU=y（noks 能开后再试）
+  BOOT_TEST_PHASE: "noks"
+
   # 两阶段编译开关（见文档 §9）:
-  #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false  → Scarlet 原生 KSU(ksuver 32486)，验证能开机
+  #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false
   #   阶段2 满血版:    SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true   → ReSukiSU + SUSFS
   SUSFS_BOOT_TEST: "true"
   SUSFS_ENABLE : false
@@ -89,7 +97,7 @@ env:
 
   NEED_DTBO : false
   NEED_SAFE_DTBO : false
-  ROM_TEXT : "crdroid_a16_ksu"
+  ROM_TEXT : "crdroid_a16_noks"
 
   PYTHON_VERSION: "3"
   PACK_METHOD: "Anykernel3"
@@ -123,7 +131,7 @@ env:
 
   BUILD_OTHER_CONFIG: "true"
   # 运行时由 "Configure merge config paths" 写入；默认仅 stock
-  MERGE_CONFIG_FILES: "vendor/redwood_stock.config"
+  MERGE_CONFIG_FILES: "vendor/redwood_scarlet_min.config"
 
   FREE_MORE_SPACE: "false"
 
@@ -195,7 +203,8 @@ jobs:
           fi
           echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver 32486)"
 
-      - name: Install redwood stock config (v6)
+      - name: Install redwood stock config (v6 legacy)
+        if: env.CONFIG_STRATEGY == 'stock'
         run: |
           set -euxo pipefail
           SRC=""
@@ -227,7 +236,23 @@ jobs:
           grep -q "^CONFIG_LTO_CLANG=y" "$DST" || { echo "[ERROR] stock config missing LTO_CLANG"; exit 1; }
           echo "[OK] installed redwood_stock.config (${LINES} lines from device /proc/config.gz)"
 
-      - name: Write redwood stock fixup overlay (v6)
+      - name: Write redwood scarlet minimal overlay (v7)
+        if: env.CONFIG_STRATEGY == 'scarlet'
+        run: |
+          set -euxo pipefail
+          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_scarlet_min.config"
+          cat > "$FRAG" <<'EOF'
+          # v7 scarlet-minimal — 仅 crDroid sideload 必需项；其余保持 xiaomi-qgki_defconfig（接近 Scarlet 官方 boot.img）
+          # CONFIG_MACH_XIAOMI is not set
+          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
+          CONFIG_LOCALVERSION="-Scarlet-v5.1-beta1"
+          # CONFIG_LOCALVERSION_AUTO is not set
+          EOF
+          sed -i 's/^          //' "$FRAG"
+          echo "[OK] wrote redwood_scarlet_min.config (MACH_XIAOMI off + LOCALVERSION match device)"
+
+      - name: Write redwood stock fixup overlay (v6 legacy)
+        if: env.CONFIG_STRATEGY == 'stock'
         run: |
           set -euxo pipefail
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock_fixup.config"
@@ -275,8 +300,8 @@ jobs:
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_stock_fixup.config (trace/dts compile fixups + MACH_XIAOMI off)"
 
-      - name: Write redwood KSU overlay (boot-test)
-        if: env.SUSFS_BOOT_TEST == 'true'
+      - name: Write redwood KSU overlay (boot-test ksu phase)
+        if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'ksu'
         run: |
           set -euxo pipefail
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_ksu.config"
@@ -287,16 +312,36 @@ jobs:
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_ksu.config (CONFIG_KSU=y only)"
 
-      - name: Configure merge config paths (v6)
+      - name: Configure merge config paths (v7)
         run: |
           set -euxo pipefail
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
-            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_ksu.config" >> "$GITHUB_ENV"
-            echo "[OK] merge: stock + fixup + ksu overlay (boot-test)"
+          STRAT="${{ env.CONFIG_STRATEGY }}"
+          PHASE="${{ env.BOOT_TEST_PHASE }}"
+          if [[ "$STRAT" == "scarlet" ]]; then
+            MERGE="vendor/redwood_scarlet_min.config"
+            if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "ksu" ]]; then
+              MERGE="${MERGE},vendor/redwood_ksu.config"
+              echo "ROM_TEXT=crdroid_a16_ksu" >> "$GITHUB_ENV"
+              echo "[OK] merge: scarlet min + ksu (boot-test phase ksu)"
+            elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+              echo "ROM_TEXT=crdroid_a16_noks" >> "$GITHUB_ENV"
+              echo "[OK] merge: scarlet min only (boot-test phase noks, no KSU)"
+            else
+              echo "ROM_TEXT=crdroid_a16" >> "$GITHUB_ENV"
+              echo "[OK] merge: scarlet min (phase-2 ReSukiSU via build-ready)"
+            fi
           else
-            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_stock_fixup.config" >> "$GITHUB_ENV"
-            echo "[OK] merge: stock + fixup (phase-2 ReSukiSU adds kernelsu.config via build-ready)"
+            if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+              MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_ksu.config"
+              echo "ROM_TEXT=crdroid_a16_ksu" >> "$GITHUB_ENV"
+              echo "[OK] merge: stock + fixup + ksu (legacy v6 boot-test)"
+            else
+              MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config"
+              echo "ROM_TEXT=crdroid_a16" >> "$GITHUB_ENV"
+              echo "[OK] merge: stock + fixup (legacy v6 phase-2)"
+            fi
           fi
+          echo "MERGE_CONFIG_FILES=${MERGE}" >> "$GITHUB_ENV"
 
       - name: Validate merge config paths
         run: |
@@ -1563,6 +1608,31 @@ jobs:
           fail() { echo "[CONFIG FAIL] $1"; exit 1; }
           must() { grep -q "^${1}$" "$CFG" || fail "missing ${1}"; }
           LINES=$(wc -l < "$CFG")
+          STRAT="${{ env.CONFIG_STRATEGY }}"
+          if [[ "$STRAT" == "scarlet" ]]; then
+            [[ "$LINES" -gt 2500 ]] || fail ".config too short (${LINES} lines) — scarlet defconfig merge failed?"
+            must "CONFIG_ARCH_YUPIK=y"
+            must "CONFIG_ARCH_LAHAINA=y"
+            must "CONFIG_PINCTRL_YUPIK=y"
+            must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
+            grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (crDroid dtbo path)"
+            grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set"
+            grep -q 'CONFIG_LOCALVERSION="-Scarlet' "$CFG" || fail "LOCALVERSION should match Scarlet (redwood_scarlet_min.config)"
+            grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set"
+            if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "${{ env.BOOT_TEST_PHASE }}" == "ksu" ]]; then
+              must "CONFIG_KSU=y"
+              grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CFG" && fail "boot-test ksu must not force CONFIG_KSU_MANUAL_HOOK"
+              echo "[OK] scarlet boot-test phase ksu: CONFIG_KSU=y"
+            elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+              grep -q "^CONFIG_KSU=y" "$CFG" && fail "phase noks must NOT have CONFIG_KSU=y"
+              echo "[OK] scarlet boot-test phase noks: no KSU"
+            else
+              must "CONFIG_KSU=y"
+              must "CONFIG_KSU_SUSFS=y"
+              echo "[OK] scarlet phase-2: ReSukiSU + SUSFS"
+            fi
+            echo "[OK] redwood .config verified (${LINES} lines, scarlet v7)"
+          else
           [[ "$LINES" -gt 5000 ]] || fail ".config too short (${LINES} lines) — stock merge failed?"
           must "CONFIG_LTO_CLANG=y"
           must "CONFIG_THINLTO=y"
@@ -1595,7 +1665,7 @@ jobs:
           grep -q "^CONFIG_QTI_BATTERY_CHARGER=y" "$CFG" && fail "QTI_BATTERY_CHARGER must be disabled (stock # CONFIG_QTI_BATTERY_CHARGER is not set)"
           grep -q "^CONFIG_LTO_NONE=y" "$CFG" && fail "LTO_NONE must not be set (disables CFI → bootloop)"
           grep -q "^# CONFIG_CFI_CLANG is not set" "$CFG" && fail "CFI_CLANG disabled (LTO/CFI mismatch → bootloop)"
-          grep -q "^# CONFIG_MMC is not set" "$CFG" && fail "MMC must stay enabled (stock has CONFIG_MMC=y)"
+          grep -q "^# CONFIG_MMC is not set" "$CFG" || fail "MMC must stay enabled (stock has CONFIG_MMC=y)"
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
             must "CONFIG_KSU=y"
             grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CFG" && fail "boot-test must not force CONFIG_KSU_MANUAL_HOOK (Scarlet native hooks)"
@@ -1605,8 +1675,9 @@ jobs:
             must "CONFIG_KSU_SUSFS=y"
             echo "[OK] phase-2 .config: stock-aligned + ReSukiSU + SUSFS"
           fi
+          echo "[OK] redwood .config verified (${LINES} lines, stock-aligned v6 legacy)"
+          fi
           cp -fp "$CFG" "$GITHUB_WORKSPACE/device_kernel/out/redwood-built.config"
-          echo "[OK] redwood .config verified (${LINES} lines, stock-aligned v6)"
 
       - name: Pack AnyKernel3 (redwood, sideload only)
         run: |
@@ -1619,8 +1690,10 @@ jobs:
             git clone "${{ env.AK3_SOURCE }}" -b "${{ env.AK3_BRANCH }}" Anykernel3 --depth=1
           fi
 
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "${{ env.BOOT_TEST_PHASE }}" == "ksu" ]]; then
             KSU_LABEL="Scarlet KSU boot-test redwood crDroid16 ${TIME}"
+          elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            KSU_LABEL="Scarlet noks boot-test redwood crDroid16 ${TIME}"
           else
             KSU_LABEL="ReSukiSU+SUSFS redwood crDroid16 ${TIME}"
           fi
