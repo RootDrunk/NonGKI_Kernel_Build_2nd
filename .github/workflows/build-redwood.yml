@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v6.0.20 修复：v6.0.19 源文件 icnss_ipc_log_defs.c 与 Makefile ipc_log_defs.o 文件名不匹配 → No rule to make target
 # v6.0.19 修复：v6.0.18 在 DEBUG_FS=n 时编 debug.c 与 debug.h 内联桩冲突 → 改 ipc_log_defs.o 仅导出符号
 # v6.0.18 修复：ICNSS2=m + IPC_LOGGING=y 但 debug.o 仅 DEBUG_FS 时编译 → icnss_ipc_log_* modpost 失败
 # v6.0.17 修复：cam_flash 链入 vmlinux 但 stock LEDS_QTI_FLASH=m → qti_flash_led_set_param 链接失败
@@ -1473,9 +1474,10 @@ jobs:
           else:
               errors.append(f"missing {dataipa_mk}")
 
-          # v6.0.19: IPC_LOGGING=y + DEBUG_FS=n → 仅 stub 四个 icnss_ipc_log_* 符号（勿编 debug.c，会与 debug.h 内联桩冲突）
+          # v6.0.19/20: IPC_LOGGING=y + DEBUG_FS=n → ipc_log_defs.c 仅 stub 四个 icnss_ipc_log_* 符号
           icnss_mk = root / "drivers/soc/qcom/icnss2/Makefile"
-          icnss_defs_c = root / "drivers/soc/qcom/icnss2/icnss_ipc_log_defs.c"
+          icnss_defs_c = root / "drivers/soc/qcom/icnss2/ipc_log_defs.c"
+          icnss_defs_c_stale = root / "drivers/soc/qcom/icnss2/icnss_ipc_log_defs.c"
           defs_marker = "redwood-icnss2-ipc-log-defs"
           old_debug_marker = "redwood-icnss2-ipc-log-debug"
 
@@ -1489,11 +1491,14 @@ jobs:
               "void *icnss_ipc_soc_wake_context;",
               "",
           ])
+          if icnss_defs_c_stale.is_file():
+              icnss_defs_c_stale.unlink()
+              print("[+] removed stale icnss_ipc_log_defs.c (Makefile expects ipc_log_defs.o)")
           if icnss_defs_c.is_file() and icnss_defs_c.read_text() == defs_body:
-              print("[=] icnss_ipc_log_defs.c: already correct")
+              print("[=] ipc_log_defs.c: already correct")
           else:
               icnss_defs_c.write_text(defs_body)
-              print("[+] icnss_ipc_log_defs.c: IPC log symbol stubs for ICNSS2 modpost")
+              print("[+] ipc_log_defs.c: IPC log symbol stubs for ICNSS2 modpost")
 
           if icnss_mk.is_file():
               text = icnss_mk.read_text()
