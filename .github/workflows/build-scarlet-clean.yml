@@ -1,0 +1,167 @@
+name: Build Scarlet redwood (clean C1 / exact reproduce)
+
+# ============================================================================
+# C 路线 · C1 阶段：1:1 复刻 Scarlet v5.1-beta1（你手机此刻正在跑的内核）
+# ----------------------------------------------------------------------------
+#   源码    : Atom-X-Devs/scarlet_xiaomi_sm7325 @ d997511b（= 设备内核源码提交）
+#   工具链  : AOSP clang-r563880c (clang 21.0.0)  —— 与设备 /proc/version 完全一致
+#             设备 banner: Android (14054515, +pgo +bolt +lto +mlgo, based on r563880c)
+#   defconfig: vendor/xiaomi-qgki_defconfig（官方真实配置，原样零改动）
+#   补丁     : 无（用对工具链后，官方 0 补丁即可干净编过 —— 不再手写任何 patch）
+#   KSU      : 保留官方默认 CONFIG_KSU=y（XXKSU 已在 drivers/kernelsu 树内，开箱即编）
+#             —— C1 既最忠实复刻设备内核，又白送 KernelSU；通过后 C2 只需再叠 SUSFS
+#
+# 关于 LTO：defconfig 是 savedefconfig，省略了等于默认值的项。LTO_CLANG_THIN 在
+#   clang 满足依赖时默认开启 —— clang14 不满足→退回 LTO_NONE（v7 旧坑）；clang21 满足→自动开。
+#
+# 设计原则：彻底脱离 JackA1ltman/NonGKI 框架，单文件自包含，把变量降到最少。
+# 产物：AnyKernel3 zip（仅未压缩 Image，无 dtbo），用 `adb sideload` 刷入。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-scarlet-clean.yml'
+
+env:
+  KERNEL_REPO: "https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git"
+  KERNEL_BRANCH: "redwood"
+  # 设备内核源码提交（5.4.295-Scarlet-v5.1-beta1-@d997511b）
+  KERNEL_COMMIT: "d997511b199b7bb6f2e9fee60d9cff8a842cbfa6"
+  DEFCONFIG: "vendor/xiaomi-qgki_defconfig"
+  # AOSP clang r563880c 存放于 mirror 分支（main 分支已移除，mirror 仍保留）
+  CLANG_REPO: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+  CLANG_BRANCH: "mirror-goog-main-prebuilts"
+  CLANG_DIR_NAME: "clang-r563880c"
+  AK3_REPO: "https://github.com/osm0sis/AnyKernel3.git"
+
+jobs:
+  build:
+    name: Scarlet redwood C1 clean
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install build deps
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev make git zip unzip \
+            python3 python-is-python3 ccache libelf-dev cpio \
+            build-essential zstd p7zip-full
+
+      - name: Fetch Scarlet kernel source @ commit
+        run: |
+          set -euxo pipefail
+          git clone "$KERNEL_REPO" -b "$KERNEL_BRANCH" kernel
+          cd kernel
+          git checkout "$KERNEL_COMMIT"
+          echo "[OK] kernel HEAD:"
+          git --no-pager log -1 --oneline
+
+      - name: Fetch AOSP clang-r563880c (sparse partial clone)
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b "$CLANG_BRANCH" "$CLANG_REPO" clang
+          cd clang
+          git sparse-checkout set "$CLANG_DIR_NAME"
+          test -x "$CLANG_DIR_NAME/bin/clang" || { echo "[ERROR] clang binary missing"; ls -la "$CLANG_DIR_NAME/bin" || true; exit 1; }
+          "$PWD/$CLANG_DIR_NAME/bin/clang" --version
+
+      - name: Build kernel (Image)
+        run: |
+          set -euxo pipefail
+          export PATH="$GITHUB_WORKSPACE/clang/$CLANG_DIR_NAME/bin:$PATH"
+          # 与设备完全一致的 build user/host，确保 UTS_RELEASE/vermagic 可匹配 vendor 模块
+          export KBUILD_BUILD_USER=build-user
+          export KBUILD_BUILD_HOST=build-host
+          cd kernel
+          ARGS="ARCH=arm64 O=out LLVM=1 LLVM_IAS=1 CC=clang"
+          make $ARGS "$DEFCONFIG"
+
+          echo "===== .config 关键项校验 ====="
+          # 1) 必须启用 Clang LTO（与设备一致）；若为 LTO_NONE 说明 clang 未满足 LTO 依赖
+          #    → 触发即说明需升级到 Scarlet 完整 build.config 流程，先不出包以免浪费一次刷机
+          if grep -q '^CONFIG_LTO_NONE=y' out/.config; then
+            echo "[ERROR] CONFIG_LTO_NONE=y —— clang21 仍未开启 LTO，需检查工具链/改走 build.config"; exit 1
+          fi
+          grep -E '^CONFIG_LTO_CLANG(_THIN)?=y' out/.config || { echo "[ERROR] 缺少 LTO_CLANG"; exit 1; }
+          # 2) 确认保留官方默认 KSU（XXKSU 在树内），这是最忠实复刻
+          grep -q '^CONFIG_KSU=y' out/.config && echo "[OK] CONFIG_KSU=y（Scarlet 官方默认，含 KernelSU）" || echo "[WARN] 未发现 CONFIG_KSU=y（与官方 defconfig 不符）"
+          # 3) 核心项与设备一致性
+          grep -q '^CONFIG_LOCALVERSION="-Scarlet' out/.config && echo "[OK] LOCALVERSION = Scarlet" || echo "[WARN] LOCALVERSION 非 Scarlet（确认 defconfig 正确）"
+          grep -q '^CONFIG_ARCH_LAHAINA=y' out/.config && echo "[OK] ARCH_LAHAINA=y" || echo "[WARN] 缺 ARCH_LAHAINA"
+          echo "=============================="
+
+          make $ARGS -j"$(nproc)" 2>&1 | tee build.log
+          echo "[OK] Image built:"
+          ls -la out/arch/arm64/boot/Image
+
+      - name: Pack AnyKernel3 (Image only, no dtbo)
+        run: |
+          set -euxo pipefail
+          cd kernel
+          TIME=$(date +%Y%m%d%H%M%S)
+          IMG="out/arch/arm64/boot/Image"
+          [[ -f "$IMG" ]] || { echo "[ERROR] no Image"; exit 1; }
+          ISZ=$(stat -c%s "$IMG")
+          [[ "$ISZ" -gt 30000000 ]] || { echo "[ERROR] Image too small: ${ISZ}"; exit 1; }
+
+          git clone --depth=1 "$AK3_REPO" AnyKernel3
+          rm -f AnyKernel3/anykernel.sh
+          # 最小化脚本：仅 dump_boot + write_boot，禁用 modules/systemless，避免 tuna 模板破坏 ramdisk
+          cat > AnyKernel3/anykernel.sh <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## redwood crDroid16 Scarlet C1 faithful reproduce (Image only, KSU included)
+          properties() { '
+          kernel.string=Scarlet C1 reproduce (redwood clang21 +KSU)
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=redwood
+          device.name2=22101320C
+          device.name3=
+          device.name4=
+          device.name5=
+          '; }
+          BLOCK=auto;
+          is_slot_device=auto;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          . tools/ak3-core.sh;
+          dump_boot;
+          write_boot;
+          EOF
+          sed -i 's/^          //' AnyKernel3/anykernel.sh
+          grep -q 'do.systemless=0' AnyKernel3/anykernel.sh || { echo "[ERROR] anykernel.sh 缺 do.systemless=0"; exit 1; }
+          grep -q 'write_boot;' AnyKernel3/anykernel.sh || { echo "[ERROR] anykernel.sh 缺 write_boot"; exit 1; }
+          grep -q 'init.tuna.rc' AnyKernel3/anykernel.sh && { echo "[ERROR] anykernel.sh 仍含 tuna 模板"; exit 1; }
+
+          cp -fp "$IMG" AnyKernel3/Image
+          cd AnyKernel3
+          rm -rf .git
+          ZIP="redwood-scarlet-C1repro-${TIME}-Anykernel3.zip"
+          7za a -mx9 "../$ZIP" *
+          cd ..
+          ls -la "$ZIP"
+          # 完整性自检
+          7za l "$ZIP" | grep -qE 'Image$' || { echo "[ERROR] zip 内无 Image"; exit 1; }
+          7za l "$ZIP" | grep -qi 'dtbo' && { echo "[ERROR] boot-test 包不应含 dtbo"; exit 1; } || true
+          echo "[OK] artifact: $ZIP"
+
+      - name: Upload AnyKernel3 zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: redwood-scarlet-C1repro
+          path: kernel/redwood-scarlet-C1repro-*-Anykernel3.zip
+          if-no-files-found: error
+
+      - name: Upload built .config (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: redwood-C1-config
+          path: kernel/out/.config
+          if-no-files-found: error
