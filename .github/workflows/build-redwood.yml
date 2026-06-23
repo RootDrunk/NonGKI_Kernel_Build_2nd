@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.1 修复：scarlet 策略 display 在 techpack 已编进 vmlinux → 跳过/移除 display link shims（duplicate dsi_panel_get_refresh_rate）
 # v7.0 策略（默认 CONFIG_STRATEGY=scarlet）：Scarlet xiaomi-qgki_defconfig + 最小 overlay；BOOT_TEST_PHASE=noks 先无 KSU 验证开机，再 ksu
 # v6.0.21 修复：stock 有 CONFIG_PINCTRL_REDWOOD（OEM）但 Scarlet Kconfig 无此符号 → olddefconfig 丢弃；校验改 PINCTRL_YUPIK
 # v6.0.20 修复：v6.0.19 源文件 icnss_ipc_log_defs.c 与 Makefile ipc_log_defs.o 文件名不匹配 → No rule to make target
@@ -391,15 +392,19 @@ jobs:
       - name: Apply redwood 5.4 compile fixes
         env:
           SUSFS_BOOT_TEST: ${{ env.SUSFS_BOOT_TEST }}
+          CONFIG_STRATEGY: ${{ env.CONFIG_STRATEGY }}
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
           python3 <<'PY'
           import os
           import re
+          import subprocess
           import sys
           from pathlib import Path
 
           skip_susfs = os.environ.get("SUSFS_BOOT_TEST", "").lower() == "true"
+          config_strategy = os.environ.get("CONFIG_STRATEGY", "scarlet").lower()
+          use_display_shims = config_strategy == "stock"
           root = Path(".")
           errors = []
 
@@ -1397,99 +1402,115 @@ jobs:
           else:
               errors.append(f"missing {ddebug}")
 
-          # v6.0.13+: display stubs only (ipa3_* 由 RMNET_IPA3/rmnet_ctl_ipa.o 提供，勿重复 shim)
+          # v6.0.13+ display stubs — 仅 stock 策略（display 在 vendor_dlkm）；scarlet v7 techpack 已提供 dsi/get_panel
           link_shim_marker = "redwood-vmlinux-link-shims"
           link_shim_c = root / "drivers/soc/qcom/redwood_vmlinux_link_shims.c"
-          link_shim_body = "\n".join([
-              "// SPDX-License-Identifier: GPL-2.0",
-              f"/* {link_shim_marker}: display 在 vendor_dlkm，vmlinux 内 GPU/cpuidle 需 dsi/get_panel 桩 */",
-              "",
-              "#include <linux/export.h>",
-              "#include <drm/drm_panel.h>",
-              "",
-              "unsigned int dsi_panel_get_refresh_rate(void)",
-              "{",
-              "\treturn 60;",
-              "}",
-              "EXPORT_SYMBOL(dsi_panel_get_refresh_rate);",
-              "",
-              "struct drm_panel *get_panel(void)",
-              "{",
-              "\treturn NULL;",
-              "}",
-              "EXPORT_SYMBOL(get_panel);",
-              "",
-          ])
-          if link_shim_c.is_file():
-              existing = link_shim_c.read_text()
-              if existing == link_shim_body:
-                  print("[=] redwood_vmlinux_link_shims.c: display stubs already correct")
-              elif "ipa3_register_rmnet_ctl_cb" in existing:
-                  link_shim_c.write_text(link_shim_body)
-                  print(
-                      "[+] redwood_vmlinux_link_shims.c: removed IPA3 aliases "
-                      "(RMNET_IPA3 rmnet_ctl_ipa.o defines ipa3_*)"
-                  )
-              else:
-                  link_shim_c.write_text(link_shim_body)
-                  print("[+] redwood_vmlinux_link_shims.c: refreshed display-only stubs")
-          else:
-              link_shim_c.write_text(link_shim_body)
-              print("[+] redwood_vmlinux_link_shims.c: display stubs (dsi_panel_get_refresh_rate/get_panel)")
-
-          qcom_mk = root / "drivers/soc/qcom/Makefile"
-          if qcom_mk.is_file():
-              mk_text = qcom_mk.read_text()
-              mk_line = f"obj-y += redwood_vmlinux_link_shims.o  # {link_shim_marker}"
-              if link_shim_marker in mk_text:
-                  print("[=] drivers/soc/qcom/Makefile: link shims already wired")
-              elif mk_line not in mk_text:
-                  qcom_mk.write_text(mk_text.rstrip() + "\n" + mk_line + "\n")
-                  print("[+] drivers/soc/qcom/Makefile: build redwood_vmlinux_link_shims.o")
-              else:
-                  print("[=] drivers/soc/qcom/Makefile: link shims line already present")
-          else:
-              errors.append(f"missing {qcom_mk}")
-
           lpm = root / "drivers/cpuidle/lpm-levels.c"
           lpm_marker = "redwood-lpm-skip-panel-defer"
-          if lpm.is_file():
-              lpm_text = lpm.read_text()
-              if lpm_marker in lpm_text:
-                  print("[=] lpm-levels.c: panel defer skip already patched")
-              elif "return -EPROBE_DEFER" not in lpm_text and "if (active_panel) {" in lpm_text:
-                  print("[=] lpm-levels.c: panel defer already removed")
-              else:
-                  lpm_block = re.sub(
-                      r"(\tstruct drm_panel \*active_panel = get_panel\(\);\n\n)"
-                      r"\tif \(!active_panel\)\n"
-                      r"\t\treturn -EPROBE_DEFER;\n\n"
-                      r"(\tret = drm_panel_notifier_register\(active_panel, &drm_notifier\);\n"
-                      r"\tif \(ret\)\n"
-                      r'\t\tpr_err\("Failed to register DRM panel notifier, ret=%d\\n", ret\);\n'
-                      r"\telse\n"
-                      r'\t\tpr_info\("Registered DRM panel notifier\\n"\);)',
-                      rf"\1\t/* {lpm_marker}: display in vendor_dlkm; NULL panel must not block cpuidle */\n"
-                      r"\tif (active_panel) {\n"
-                      r"\2\n"
-                      r"\t} else {\n"
-                      r'\t\tpr_info("lpm: no panel in vmlinux, skip DRM notifier\\n");\n'
-                      r"\t}",
-                      lpm_text,
-                      count=1,
-                  )
-                  if lpm_block == lpm_text:
-                      errors.append("lpm-levels.c: panel defer block regex did not match")
+          qcom_mk = root / "drivers/soc/qcom/Makefile"
+
+          if use_display_shims:
+              link_shim_body = "\n".join([
+                  "// SPDX-License-Identifier: GPL-2.0",
+                  f"/* {link_shim_marker}: display 在 vendor_dlkm，vmlinux 内 GPU/cpuidle 需 dsi/get_panel 桩 */",
+                  "",
+                  "#include <linux/export.h>",
+                  "#include <drm/drm_panel.h>",
+                  "",
+                  "unsigned int dsi_panel_get_refresh_rate(void)",
+                  "{",
+                  "\treturn 60;",
+                  "}",
+                  "EXPORT_SYMBOL(dsi_panel_get_refresh_rate);",
+                  "",
+                  "struct drm_panel *get_panel(void)",
+                  "{",
+                  "\treturn NULL;",
+                  "}",
+                  "EXPORT_SYMBOL(get_panel);",
+                  "",
+              ])
+              if link_shim_c.is_file():
+                  existing = link_shim_c.read_text()
+                  if existing == link_shim_body:
+                      print("[=] redwood_vmlinux_link_shims.c: display stubs already correct")
+                  elif "ipa3_register_rmnet_ctl_cb" in existing:
+                      link_shim_c.write_text(link_shim_body)
+                      print(
+                          "[+] redwood_vmlinux_link_shims.c: removed IPA3 aliases "
+                          "(RMNET_IPA3 rmnet_ctl_ipa.o defines ipa3_*)"
+                      )
                   else:
-                      lpm.write_text(lpm_block)
-                      print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
+                      link_shim_c.write_text(link_shim_body)
+                      print("[+] redwood_vmlinux_link_shims.c: refreshed display-only stubs")
+              else:
+                  link_shim_c.write_text(link_shim_body)
+                  print("[+] redwood_vmlinux_link_shims.c: display stubs (dsi_panel_get_refresh_rate/get_panel)")
+
+              if qcom_mk.is_file():
+                  mk_text = qcom_mk.read_text()
+                  mk_line = f"obj-y += redwood_vmlinux_link_shims.o  # {link_shim_marker}"
+                  if link_shim_marker in mk_text:
+                      print("[=] drivers/soc/qcom/Makefile: link shims already wired")
+                  elif mk_line not in mk_text:
+                      qcom_mk.write_text(mk_text.rstrip() + "\n" + mk_line + "\n")
+                      print("[+] drivers/soc/qcom/Makefile: build redwood_vmlinux_link_shims.o")
+                  else:
+                      print("[=] drivers/soc/qcom/Makefile: link shims line already present")
+              else:
+                  errors.append(f"missing {qcom_mk}")
+
+              if lpm.is_file():
+                  lpm_text = lpm.read_text()
+                  if lpm_marker in lpm_text:
+                      print("[=] lpm-levels.c: panel defer skip already patched")
+                  elif "return -EPROBE_DEFER" not in lpm_text and "if (active_panel) {" in lpm_text:
+                      print("[=] lpm-levels.c: panel defer already removed")
+                  else:
+                      lpm_block = re.sub(
+                          r"(\tstruct drm_panel \*active_panel = get_panel\(\);\n\n)"
+                          r"\tif \(!active_panel\)\n"
+                          r"\t\treturn -EPROBE_DEFER;\n\n"
+                          r"(\tret = drm_panel_notifier_register\(active_panel, &drm_notifier\);\n"
+                          r"\tif \(ret\)\n"
+                          r'\t\tpr_err\("Failed to register DRM panel notifier, ret=%d\\n", ret\);\n'
+                          r"\telse\n"
+                          r'\t\tpr_info\("Registered DRM panel notifier\\n"\);)',
+                          rf"\1\t/* {lpm_marker}: display in vendor_dlkm; NULL panel must not block cpuidle */\n"
+                          r"\tif (active_panel) {\n"
+                          r"\2\n"
+                          r"\t} else {\n"
+                          r'\t\tpr_info("lpm: no panel in vmlinux, skip DRM notifier\\n");\n'
+                          r"\t}",
+                          lpm_text,
+                          count=1,
+                      )
+                      if lpm_block == lpm_text:
+                          errors.append("lpm-levels.c: panel defer block regex did not match")
+                      else:
+                          lpm.write_text(lpm_block)
+                          print("[+] lpm-levels.c: skip EPROBE_DEFER when get_panel() is NULL")
+              else:
+                  errors.append(f"missing {lpm}")
           else:
-              errors.append(f"missing {lpm}")
+              if link_shim_c.is_file():
+                  link_shim_c.unlink()
+                  print("[+] removed redwood_vmlinux_link_shims.c (scarlet: dsi in techpack vmlinux)")
+              if qcom_mk.is_file():
+                  cleaned = [
+                      ln for ln in qcom_mk.read_text().splitlines()
+                      if link_shim_marker not in ln and "redwood_vmlinux_link_shims" not in ln
+                  ]
+                  qcom_mk.write_text("\n".join(cleaned).rstrip() + "\n")
+                  print("[+] drivers/soc/qcom/Makefile: removed link shims (scarlet v7)")
+              if lpm.is_file() and lpm_marker in lpm.read_text():
+                  subprocess.run(["git", "checkout", "HEAD", "--", str(lpm)], check=True)
+                  print("[+] lpm-levels.c: reverted panel defer shim (scarlet v7)")
 
           # v6.0.15: fixup 关 ARCH_LAHAINA 后，dataipa/Makefile 的 LAHAINA 专用块不跑 → GSI 未编进 vmlinux
           dataipa_mk = root / "techpack/dataipa/drivers/platform/msm/Makefile"
           dataipa_marker = "redwood-yupik-dataipa-gsi"
-          if dataipa_mk.is_file():
+          if dataipa_mk.is_file() and use_display_shims:
               text = dataipa_mk.read_text()
               if dataipa_marker in text:
                   print("[=] dataipa msm Makefile: YUPIK GSI block already patched")
@@ -1520,6 +1541,8 @@ jobs:
                           "[+] dataipa msm Makefile: enable GSI + RMNET for ARCH_YUPIK "
                           "(IPA3=y link dependency)"
                       )
+          elif dataipa_mk.is_file():
+              print("[=] dataipa msm Makefile: skip YUPIK GSI patch (scarlet: ARCH_LAHAINA block active)")
           else:
               errors.append(f"missing {dataipa_mk}")
 
