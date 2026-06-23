@@ -1,18 +1,22 @@
-name: Build Scarlet redwood (clean C1 / exact reproduce)
+name: Build Scarlet redwood (clean C1 / v5.0 reproduce)
 
 # ============================================================================
-# C 路线 · C1 阶段：1:1 复刻 Scarlet v5.1-beta1（你手机此刻正在跑的内核）
+# C 路线 · C1 阶段：用官方正式版 Scarlet v5.0 复刻可启动内核（含 KernelSU）
 # ----------------------------------------------------------------------------
-#   源码    : Atom-X-Devs/scarlet_xiaomi_sm7325 @ d997511b（= 设备内核源码提交）
-#   工具链  : AOSP clang-r563880c (clang 21.0.0)  —— 与设备 /proc/version 完全一致
-#             设备 banner: Android (14054515, +pgo +bolt +lto +mlgo, based on r563880c)
+#   源码    : Atom-X-Devs/scarlet_xiaomi_sm7325 @ redwood HEAD (= tag v5.0, 976f762)
+#             官方正式发布版，亲测可在 redwood/crDroid 上 sideload 开机
+#   工具链  : AOSP clang-r584948 (clang 21)  —— 与设备 r563880c 同为 clang 21 大版本
+#             (设备 r563880c 已从 prebuilts 分支移除；r584948 是 Mainline kernel 现用版)
 #   defconfig: vendor/xiaomi-qgki_defconfig（官方真实配置，原样零改动）
 #   补丁     : 无（用对工具链后，官方 0 补丁即可干净编过 —— 不再手写任何 patch）
 #   KSU      : 保留官方默认 CONFIG_KSU=y（XXKSU 已在 drivers/kernelsu 树内，开箱即编）
-#             —— C1 既最忠实复刻设备内核，又白送 KernelSU；通过后 C2 只需再叠 SUSFS
+#             —— C1 既复刻官方可启动内核，又白送 KernelSU；通过后 C2 只需再叠 SUSFS
 #
 # 关于 LTO：defconfig 是 savedefconfig，省略了等于默认值的项。LTO_CLANG_THIN 在
 #   clang 满足依赖时默认开启 —— clang14 不满足→退回 LTO_NONE（v7 旧坑）；clang21 满足→自动开。
+#
+# 注意：设备现跑 v5.1-beta1，本编译为 v5.0，版本串不同。Scarlet 官方 v5.0 刷机包
+#   亦为 AOSP/crDroid 设计，vendor 模块非死锁版本，开机风险低；若仍 bootloop 再切回 v5.1-beta1。
 #
 # 设计原则：彻底脱离 JackA1ltman/NonGKI 框架，单文件自包含，把变量降到最少。
 # 产物：AnyKernel3 zip（仅未压缩 Image，无 dtbo），用 `adb sideload` 刷入。
@@ -26,14 +30,12 @@ on:
 
 env:
   KERNEL_REPO: "https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git"
-  KERNEL_BRANCH: "redwood"
-  # 设备内核源码提交（5.4.295-Scarlet-v5.1-beta1-@d997511b）
-  KERNEL_COMMIT: "d997511b199b7bb6f2e9fee60d9cff8a842cbfa6"
+  KERNEL_BRANCH: "redwood"   # HEAD = tag v5.0 (976f762)
   DEFCONFIG: "vendor/xiaomi-qgki_defconfig"
-  # AOSP clang r563880c 存放于 mirror 分支（main 分支已移除，mirror 仍保留）
+  # AOSP clang（clang 21，与设备同代）。r563880c 已从该分支移除，改用现存的 r584948。
   CLANG_REPO: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
   CLANG_BRANCH: "mirror-goog-main-prebuilts"
-  CLANG_DIR_NAME: "clang-r563880c"
+  CLANG_DIR_NAME: "clang-r584948"
   AK3_REPO: "https://github.com/osm0sis/AnyKernel3.git"
 
 jobs:
@@ -50,27 +52,17 @@ jobs:
             python3 python-is-python3 ccache libelf-dev cpio \
             build-essential zstd p7zip-full
 
-      - name: Fetch Scarlet kernel source @ commit
+      - name: Fetch Scarlet kernel source (redwood HEAD = v5.0)
         run: |
           set -euxo pipefail
-          # 注意：redwood 分支已回退到 v5.0(976f762)，设备跑的 v5.1-beta1(d997511b) 是游离提交，
-          #   不在 redwood 历史里 → 必须按精确 SHA 浅拉取（GitHub 允许 fetch 该 reachable SHA）。
-          mkdir kernel && cd kernel
-          git init -q
-          git remote add origin "$KERNEL_REPO"
-          if git fetch --depth=1 origin "$KERNEL_COMMIT"; then
-            git checkout -q FETCH_HEAD
-            echo "[OK] 精确复刻设备源码提交 $KERNEL_COMMIT (v5.1-beta1)"
-          else
-            echo "[WARN] 无法按 SHA 拉取 $KERNEL_COMMIT，回退 redwood 分支 HEAD (v5.0)"
-            echo "[WARN] 注意：v5.0 的 LOCALVERSION 与设备 v5.1-beta1 不同，存在 vermagic 风险"
-            git fetch --depth=1 origin "$KERNEL_BRANCH"
-            git checkout -q FETCH_HEAD
-          fi
+          # redwood 分支 HEAD = 官方正式版 v5.0 (976f762)，直接浅克隆即可。
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          cd kernel
+          echo "[OK] kernel HEAD:"
           git --no-pager log -1 --oneline
           grep -m1 'CONFIG_LOCALVERSION=' arch/arm64/configs/vendor/xiaomi-qgki_defconfig || true
 
-      - name: Fetch AOSP clang-r563880c (sparse partial clone)
+      - name: Fetch AOSP clang (clang 21, sparse partial clone)
         run: |
           set -euxo pipefail
           git clone --depth=1 --filter=blob:none --sparse \
