@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.7 修复：ReSukiSU 阶段 CONFIG_KALLSYMS_ALL 未开（defconfig 仅 KALLSYMS=y）→ scarlet_min 显式开启。
 # v7.0.6 最终满血：SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true（ReSukiSU+SUSFS 一次编完）
 # v7.0.5 修复：__stack_chk_guard 全量 undefined。设备 /proc/config.gz 为 STRONG=y 且无 PER_TASK（全局 canary，
 #            process.c 在 !PER_TASK 时定义该符号）；clang-r547379 支持 sysreg → CC_HAVE_STACKPROTECTOR_SYSREG=y
@@ -324,6 +325,10 @@ jobs:
           #
           # ReSukiSU 模块/metamodule 需要 xattr（NonGKI 框架 veux 模板同款）
           CONFIG_TMPFS_XATTR=y
+          #
+          # ReSukiSU 非 GKI 必需（KPM/符号解析）；defconfig 仅有 KALLSYMS=y 时 olddefconfig 不会自动开 ALL
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_scarlet_min.config (MACH_XIAOMI off + LTO/CFI + LOCALVERSION)"
