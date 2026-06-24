@@ -3,6 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.8 修复：Scarlet 5.4 的 KALLSYMS_ALL depends on DEBUG_KERNEL && KALLSYMS；
+#            仅写 KALLSYMS_ALL 会被 olddefconfig 剥掉。设备 stock 同时有 DEBUG_KERNEL=y + KALLSYMS_ALL=y。
 # v7.0.7 修复：ReSukiSU 阶段 CONFIG_KALLSYMS_ALL 未开（defconfig 仅 KALLSYMS=y）→ scarlet_min 显式开启。
 # v7.0.6 最终满血：SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true（ReSukiSU+SUSFS 一次编完）
 # v7.0.5 修复：__stack_chk_guard 全量 undefined。设备 /proc/config.gz 为 STRONG=y 且无 PER_TASK（全局 canary，
@@ -326,9 +328,12 @@ jobs:
           # ReSukiSU 模块/metamodule 需要 xattr（NonGKI 框架 veux 模板同款）
           CONFIG_TMPFS_XATTR=y
           #
-          # ReSukiSU 非 GKI 必需（KPM/符号解析）；defconfig 仅有 KALLSYMS=y 时 olddefconfig 不会自动开 ALL
+          # ReSukiSU 非 GKI 必需（KPM/符号解析）
+          # Scarlet init/Kconfig: KALLSYMS_ALL depends on DEBUG_KERNEL && KALLSYMS（设备 stock 两者均=y）
+          CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
           CONFIG_KALLSYMS_ALL=y
+          CONFIG_KALLSYMS_BASE_RELATIVE=y
           EOF
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_scarlet_min.config (MACH_XIAOMI off + LTO/CFI + LOCALVERSION)"
@@ -1789,6 +1794,7 @@ jobs:
             else
               must "CONFIG_KSU=y"
               must "CONFIG_KSU_SUSFS=y"
+              must "CONFIG_DEBUG_KERNEL=y"
               must "CONFIG_KALLSYMS=y"
               must "CONFIG_KALLSYMS_ALL=y"
               must "CONFIG_TMPFS_XATTR=y"
