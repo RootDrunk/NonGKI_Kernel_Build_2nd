@@ -3,6 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.12 修复：make dtbs 已由 redwood-scarlet-ak3-dtbo 生成 dtbo.img；不再 curl googlesource
+#            mkdtboimg.py（503）。优先 cp 内核产物，缺失时再 mkdtbo + GitHub raw 镜像。
 # v7.0.11 修复：花屏根因（dtb/dtbo 已与官方字节一致，仅 Image 不同）—
 #            ① get_panel NULL 桩 + EXPORT_SYMBOL 干扰显示；scarlet 改 lpm-levels 跳过 panel notifier，不再链接桩。
 #            ② SUSFS SPOOF_CMDLINE/UNAME 篡改 bootconfig → MDP/面板初始化异常；首版关闭 spoof，保留 SUS_PATH 等。
@@ -1835,15 +1837,30 @@ jobs:
             exit 1
           fi
 
-          MKDTBO="scripts/dtc/mkdtboimg.py"
-          if [[ ! -f "$MKDTBO" ]]; then
-            curl -fsSL "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/main/utils/src/mkdtboimg.py?format=TEXT" | base64 -d > "$MKDTBO"
+          # make dtbs 已输出 DTBOIMG（见日志 DTBOIMG .../qcom/dtbo.img）；优先直接用，避免 googlesource 503
+          KERNEL_DTBO="$DTB_DIR/dtbo.img"
+          if [[ -f "$KERNEL_DTBO" ]]; then
+            cp -fp "$KERNEL_DTBO" "$IMAGE_DIR/dtbo.img"
+            echo "[OK] dtbo.img from kernel build (no mkdtboimg.py download)"
+          else
+            MKDTBO="scripts/dtc/mkdtboimg.py"
+            if [[ ! -f "$MKDTBO" ]]; then
+              mkdir -p scripts/dtc
+              for url in \
+                "https://raw.githubusercontent.com/aosp-mirror/platform_system_libufdt/main/utils/src/mkdtboimg.py" \
+                "https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-22.2/utils/src/mkdtboimg.py"; do
+                if curl -fsSL "$url" -o "$MKDTBO"; then
+                  break
+                fi
+              done
+            fi
+            [[ -f "$MKDTBO" ]] || { echo "[ERROR] dtbo.img missing and mkdtboimg.py download failed"; exit 1; }
+            python3 "$MKDTBO" create "$IMAGE_DIR/dtbo.img" --page_size=4096 "$REDWOOD_DTBO"
+            echo "[OK] dtbo.img built via mkdtboimg.py fallback"
           fi
-          [[ -f "$MKDTBO" ]] || { echo "[ERROR] mkdtboimg.py missing"; exit 1; }
-
-          python3 "$MKDTBO" create "$IMAGE_DIR/dtbo.img" --page_size=4096 "$REDWOOD_DTBO"
           DTBO_SZ=$(stat -c%s "$IMAGE_DIR/dtbo.img")
           [[ "$DTBO_SZ" -gt 50000 ]] || { echo "[ERROR] dtbo.img too small: ${DTBO_SZ} bytes"; exit 1; }
+          [[ "$DTBO_SZ" -lt 500000 ]] || { echo "[ERROR] dtbo.img too large: ${DTBO_SZ} bytes (expect ~116KB)"; exit 1; }
           echo "[OK] dtbo.img: ${DTBO_SZ} bytes (official Scarlet ~116KB)"
 
       - name: Verify redwood kernel .config
