@@ -3,6 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.13 二分：阶段 A noks — SUSFS_BOOT_TEST=true + SUSFS_ENABLE=false + BOOT_TEST_PHASE=noks
+#            纯 Scarlet 重编译（无 ReSukiSU/SUSFS），验证自编 overlay 是否导致花屏。
 # v7.0.12 修复：make dtbs 已由 redwood-scarlet-ak3-dtbo 生成 dtbo.img；不再 curl googlesource
 #            mkdtboimg.py（503）。优先 cp 内核产物，缺失时再 mkdtbo + GitHub raw 镜像。
 # v7.0.11 修复：花屏根因（dtb/dtbo 已与官方字节一致，仅 Image 不同）—
@@ -99,14 +101,16 @@ env:
   #   scarlet — Scarlet vendor/xiaomi-qgki_defconfig + redwood_scarlet_min.config（推荐，接近能开机的 Scarlet 内核）
   #   stock   — v6 全量 redwood_stock.config merge（legacy，fixup 偏离大，易 bootloop）
   CONFIG_STRATEGY: "scarlet"
-  # boot-test 子阶段: noks=仅重编译 Scarlet defconfig；ksu=叠加 CONFIG_KSU=y（noks 能开后再试）
+  # v7.0.13 阶段 A：noks 纯 Scarlet 重编译（无 KSU/SUSFS）— 花屏二分定位
+  #   阶段 B：SUSFS_BOOT_TEST=true + BOOT_TEST_PHASE=ksu（Scarlet 原生 KSU）
+  #   阶段 C：SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true（ReSukiSU+SUSFS 满血）
   BOOT_TEST_PHASE: "noks"
 
   # 两阶段编译开关（见文档 §9）:
-  #   阶段1 boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false
+  #   阶段 A boot-test: SUSFS_BOOT_TEST=true  + SUSFS_ENABLE=false  → noks
   #   阶段3 满血版:    SUSFS_BOOT_TEST=false + SUSFS_ENABLE=true   → ReSukiSU + SUSFS
-  SUSFS_BOOT_TEST: "false"
-  SUSFS_ENABLE : true
+  SUSFS_BOOT_TEST: "true"
+  SUSFS_ENABLE : false
 
   KERNELSU_SOURCE : ""
   KERNELSU_BRANCH : ""
@@ -122,7 +126,7 @@ env:
 
   NEED_DTBO : false
   NEED_SAFE_DTBO : false
-  ROM_TEXT : "crdroid_a16_susfs"
+  ROM_TEXT : "crdroid_a16_noks"
 
   PYTHON_VERSION: "3"
   PACK_METHOD: "Anykernel3"
