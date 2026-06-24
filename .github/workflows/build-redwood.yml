@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.10 修复：v7.0.9 用 cat qcom/*.dtb 拼出 44MB dtb（官方 ~405KB yupik.dtb）→ boot 分区异常。
 # v7.0.9 修复：自编包花屏根因 — 产物仅 Image + 极简 anykernel.sh，缺官方 Scarlet zip 的
 #            dtb/dtbo.img 与 vendor_boot split_boot/flash_boot；boot 分区 DT 错 → MDP/面板花屏。
 #            打包对齐 Atom-X-Devs Scarlet-v5.0-ksu-redwood zip（Image+dtb+dtbo+双分区刷写）。
@@ -1787,10 +1788,12 @@ jobs:
           fi
 
           DTB_DIR="out/arch/$KARCH/boot/dts/vendor/qcom"
-          cat "$DTB_DIR"/*.dtb > "$IMAGE_DIR/dtb"
+          # 官方 Scarlet zip 仅 yupik.dtb（~405KB）；禁止 cat 全部 qcom/*.dtb（会到 40MB+）
+          cp -fp "$YDTB" "$IMAGE_DIR/dtb"
           DTB_SZ=$(stat -c%s "$IMAGE_DIR/dtb")
           [[ "$DTB_SZ" -gt 100000 ]] || { echo "[ERROR] dtb too small: ${DTB_SZ} bytes"; exit 1; }
-          echo "[OK] dtb blob: ${DTB_SZ} bytes"
+          [[ "$DTB_SZ" -lt 800000 ]] || { echo "[ERROR] dtb too large: ${DTB_SZ} bytes (expected yupik-only ~405KB, not cat qcom/*.dtb)"; exit 1; }
+          echo "[OK] dtb blob (yupik only): ${DTB_SZ} bytes"
 
           REDWOOD_DTBO=$(find "out/arch/$KARCH/boot/dts" -name 'redwood-sm7325-overlay.dtbo' | head -1)
           if [[ -z "$REDWOOD_DTBO" ]]; then
@@ -2040,10 +2043,14 @@ jobs:
           LIST=$(7za l "$ZIP")
           echo "$LIST" | grep -qE 'Image(\.gz)?(-dtb)?$' || { echo "[ERROR] zip has no kernel Image"; exit 1; }
           if [[ "${{ env.CONFIG_STRATEGY }}" == "scarlet" ]]; then
-            echo "$LIST" | grep -qE '(^| )dtb$' || { echo "[ERROR] scarlet zip must contain dtb (device tree)"; exit 1; }
+            echo "$LIST" | grep -qE '[[:space:]]dtb$' || { echo "[ERROR] scarlet zip must contain dtb (device tree)"; exit 1; }
             echo "$LIST" | grep -qi 'dtbo\.img' || { echo "[ERROR] scarlet zip must contain dtbo.img"; exit 1; }
             echo "$LIST" | grep -qE 'Image\.gz-dtb' && { echo "[ERROR] zip must not contain Image.gz-dtb"; exit 1; }
-            echo "[OK] zip: Image + dtb + dtbo.img (Scarlet v5.0 layout)"
+            rm -rf /tmp/ak3sz && mkdir -p /tmp/ak3sz
+            7za e -y -o/tmp/ak3sz "$ZIP" dtb >/dev/null
+            DTB_ZSZ=$(stat -c%s /tmp/ak3sz/dtb)
+            [[ "$DTB_ZSZ" -gt 100000 && "$DTB_ZSZ" -lt 800000 ]] || { echo "[ERROR] zip dtb size ${DTB_ZSZ} bytes (expect yupik-only ~405KB)"; exit 1; }
+            echo "[OK] zip: Image + dtb(${DTB_ZSZ}B) + dtbo.img (Scarlet v5.0 layout)"
           fi
           rm -rf /tmp/ak3verify && mkdir -p /tmp/ak3verify
           7za e -y -o/tmp/ak3verify "$ZIP" anykernel.sh >/dev/null
