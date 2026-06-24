@@ -3,6 +3,9 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.0.9 修复：自编包花屏根因 — 产物仅 Image + 极简 anykernel.sh，缺官方 Scarlet zip 的
+#            dtb/dtbo.img 与 vendor_boot split_boot/flash_boot；boot 分区 DT 错 → MDP/面板花屏。
+#            打包对齐 Atom-X-Devs Scarlet-v5.0-ksu-redwood zip（Image+dtb+dtbo+双分区刷写）。
 # v7.0.8 修复：Scarlet 5.4 的 KALLSYMS_ALL depends on DEBUG_KERNEL && KALLSYMS；
 #            仅写 KALLSYMS_ALL 会被 olddefconfig 剥掉。设备 stock 同时有 DEBUG_KERNEL=y + KALLSYMS_ALL=y。
 # v7.0.7 修复：ReSukiSU 阶段 CONFIG_KALLSYMS_ALL 未开（defconfig 仅 KALLSYMS=y）→ scarlet_min 显式开启。
@@ -844,6 +847,21 @@ jobs:
                   print("[=] dts Makefile: Xiaomi overlay guard already patched")
               else:
                   errors.append("dts Makefile: cannot patch Xiaomi overlay hard error")
+              # v7.0.9: scarlet 关 MACH_XIAOMI 时仍须编 redwood overlay dtbo（官方 zip 含 dtbo.img）
+              if config_strategy == "scarlet":
+                  marker = "redwood-scarlet-ak3-dtbo"
+                  if marker in text:
+                      print("[=] dts Makefile: scarlet ak3 dtbo rule already present")
+                  else:
+                      text = text.rstrip() + (
+                          "\n\n# redwood-scarlet-ak3-dtbo: pack dtbo.img like official Scarlet v5.0\n"
+                          "ifeq ($(CONFIG_ARCH_YUPIK), y)\n"
+                          "dtbo-y += redwood-sm7325-overlay.dtbo\n"
+                          "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
+                          "endif\n"
+                      )
+                      dt_mk.write_text(text)
+                      print("[+] dts Makefile: ARCH_YUPIK redwood overlay dtbo for AK3 pack")
           else:
               errors.append(f"missing {dt_mk}")
 
@@ -1744,6 +1762,54 @@ jobs:
       - name: Build Process
         uses: ./.github/workflows/build-process
 
+      - name: Prepare Scarlet AK3 dtb/dtbo (match official v5.0 pack)
+        if: env.CONFIG_STRATEGY == 'scarlet'
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          export PATH="$GITHUB_WORKSPACE/clang-custom/bin:$PATH"
+          KARCH="${{ env.KERNEL_ARCH }}"
+          IMAGE_DIR="out/arch/$KARCH/boot"
+          MK=(make O=out "ARCH=$KARCH" LLVM=1 LLVM_IAS=1 CC=clang)
+
+          echo "[+] build dtbs + redwood overlay dtbo (official Scarlet zip ships dtb+dtbo.img)..."
+          "${MK[@]}" dtbs
+          "${MK[@]}" "out/arch/$KARCH/boot/dts/vendor/qcom/redwood-sm7325-overlay.dtbo" || true
+
+          YDTB="out/arch/$KARCH/boot/dts/vendor/qcom/yupik.dtb"
+          if [[ ! -f "$YDTB" ]]; then
+            YDTB=$(find "out/arch/$KARCH/boot/dts" -name 'yupik.dtb' | head -1)
+          fi
+          if [[ ! -f "$YDTB" ]]; then
+            echo "[ERROR] yupik.dtb missing after dtbs"
+            find "out/arch/$KARCH/boot/dts" -name '*.dtb' | head -30 || true
+            exit 1
+          fi
+
+          DTB_DIR="out/arch/$KARCH/boot/dts/vendor/qcom"
+          cat "$DTB_DIR"/*.dtb > "$IMAGE_DIR/dtb"
+          DTB_SZ=$(stat -c%s "$IMAGE_DIR/dtb")
+          [[ "$DTB_SZ" -gt 100000 ]] || { echo "[ERROR] dtb too small: ${DTB_SZ} bytes"; exit 1; }
+          echo "[OK] dtb blob: ${DTB_SZ} bytes"
+
+          REDWOOD_DTBO=$(find "out/arch/$KARCH/boot/dts" -name 'redwood-sm7325-overlay.dtbo' | head -1)
+          if [[ -z "$REDWOOD_DTBO" ]]; then
+            echo "[ERROR] redwood-sm7325-overlay.dtbo missing"
+            find "out/arch/$KARCH/boot/dts" -name '*.dtbo' | head -20 || true
+            exit 1
+          fi
+
+          MKDTBO="scripts/dtc/mkdtboimg.py"
+          if [[ ! -f "$MKDTBO" ]]; then
+            curl -fsSL "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/main/utils/src/mkdtboimg.py?format=TEXT" | base64 -d > "$MKDTBO"
+          fi
+          [[ -f "$MKDTBO" ]] || { echo "[ERROR] mkdtboimg.py missing"; exit 1; }
+
+          python3 "$MKDTBO" create "$IMAGE_DIR/dtbo.img" --page_size=4096 "$REDWOOD_DTBO"
+          DTBO_SZ=$(stat -c%s "$IMAGE_DIR/dtbo.img")
+          [[ "$DTBO_SZ" -gt 50000 ]] || { echo "[ERROR] dtbo.img too small: ${DTBO_SZ} bytes"; exit 1; }
+          echo "[OK] dtbo.img: ${DTBO_SZ} bytes (official Scarlet ~116KB)"
+
       - name: Verify redwood kernel .config
         run: |
           set -euxo pipefail
@@ -1867,13 +1933,15 @@ jobs:
             KSU_LABEL="ReSukiSU+SUSFS redwood crDroid16 ${TIME}"
           fi
 
-          # 禁止沿用上游 tuna/Galaxy Nexus 模板（init.tuna.rc/fstab 补丁会破坏 redwood boot ramdisk）
+          # 对齐 Atom-X-Devs Scarlet-v5.0 zip：boot write_boot + vendor_boot split_boot/flash_boot
+          # 禁止沿用极简脚本（仅 dump_boot/write_boot → 缺 vendor_boot → 花屏/bootloop）
           cat > Anykernel3/anykernel.sh <<EOF
           ### AnyKernel3 Ramdisk Mod Script
-          ## redwood crDroid16 NonGKI (minimal: dump_boot + write_boot only)
+          ## redwood crDroid16 NonGKI (Scarlet v5.0 flash layout)
 
           properties() { '
           kernel.string=${KSU_LABEL}
+          kernel.revision=5.4
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -1886,60 +1954,50 @@ jobs:
           device.name5=
           '; }
 
-          boot_attributes() {
-            set_perm_recursive 0 0 755 644 \$RAMDISK/*;
-            set_perm_recursive 0 0 750 750 \$RAMDISK/init* \$RAMDISK/sbin;
-          }
-
-          BLOCK=auto;
-          is_slot_device=auto;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;
+          NO_BLOCK_DISPLAY=1;
 
           . tools/ak3-core.sh;
 
           dump_boot;
           write_boot;
+
+          BLOCK=vendor_boot
+          reset_ak;
+
+          split_boot;
+          flash_boot;
           EOF
           sed -i 's/^          //' Anykernel3/anykernel.sh
           grep -q 'do.systemless=0' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing do.systemless=0"; exit 1; }
           grep -q 'init.tuna.rc' Anykernel3/anykernel.sh && { echo "[ERROR] anykernel.sh still contains tuna template"; exit 1; }
           grep -q 'write_boot;' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing write_boot"; exit 1; }
+          grep -q 'split_boot;' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing split_boot (vendor_boot)"; exit 1; }
+          grep -q 'flash_boot;' Anykernel3/anykernel.sh || { echo "[ERROR] anykernel.sh missing flash_boot (vendor_boot)"; exit 1; }
 
           mkdir -p tmp
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" || "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
-            # boot-test / SUSFS：只刷未压缩 Image，禁止 Image.gz-dtb（自带 DTB 与 stock dtbo 冲突 → bootloop）
-            if [[ ! -f "$IMAGE_DIR/Image" ]]; then
-              echo "[ERROR] boot-test requires out/.../boot/Image (uncompressed)"
-              ls -la "$IMAGE_DIR" || true
-              exit 1
-            fi
-            cp -fp "$IMAGE_DIR/Image" tmp/
-            echo "[+] redwood pack: Image only (no Image.gz-dtb, no dtbo)"
-          else
-            if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
-              cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/
-              echo "[+] pack Image.gz-dtb"
-            elif [[ -f "$IMAGE_DIR/Image.gz" ]]; then
-              cp -fp "$IMAGE_DIR/Image.gz" tmp/
-              echo "[+] pack Image.gz"
-            elif [[ -f "$IMAGE_DIR/Image" ]]; then
-              cp -fp "$IMAGE_DIR/Image" tmp/
-              echo "[+] pack Image"
-            else
-              echo "[ERROR] no kernel image in $IMAGE_DIR"
-              ls -la "$IMAGE_DIR" || true
-              exit 1
-            fi
-            if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
-              cp -fp "$IMAGE_DIR/dtbo.img" tmp/
-            fi
-            if [[ -f "$IMAGE_DIR/dtb.img" ]]; then
-              cp -fp "$IMAGE_DIR/dtb.img" tmp/dtb
-            elif [[ -f "$IMAGE_DIR/dtb" ]]; then
-              cp -fp "$IMAGE_DIR/dtb" tmp/
-            fi
+          if [[ ! -f "$IMAGE_DIR/Image" ]]; then
+            echo "[ERROR] requires out/.../boot/Image (uncompressed)"
+            ls -la "$IMAGE_DIR" || true
+            exit 1
           fi
+          cp -fp "$IMAGE_DIR/Image" tmp/
+          if [[ -f "$IMAGE_DIR/dtb" ]]; then
+            cp -fp "$IMAGE_DIR/dtb" tmp/
+          elif [[ -f "$IMAGE_DIR/dtb.img" ]]; then
+            cp -fp "$IMAGE_DIR/dtb.img" tmp/dtb
+          else
+            echo "[ERROR] missing dtb blob (Prepare Scarlet AK3 dtb/dtbo step must run first)"
+            exit 1
+          fi
+          if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
+            cp -fp "$IMAGE_DIR/dtbo.img" tmp/
+          else
+            echo "[ERROR] missing dtbo.img (Prepare Scarlet AK3 dtb/dtbo step must run first)"
+            exit 1
+          fi
+          echo "[+] redwood pack: Image + dtb + dtbo.img (Scarlet v5.0 layout, NOT Image-only)"
 
           KERNEL_FILE=$(find tmp -maxdepth 1 -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' \) | head -1)
           KERNEL_SIZE=$(stat -c%s "$KERNEL_FILE")
@@ -1981,12 +2039,11 @@ jobs:
           [[ "$ZSZ" -gt 10000000 ]] || { echo "[ERROR] zip too small: ${ZSZ} bytes"; exit 1; }
           LIST=$(7za l "$ZIP")
           echo "$LIST" | grep -qE 'Image(\.gz)?(-dtb)?$' || { echo "[ERROR] zip has no kernel Image"; exit 1; }
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" || "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
-            if echo "$LIST" | grep -qi 'dtbo'; then
-              echo "[ERROR] zip must NOT contain dtbo (use stock dtbo)"
-              exit 1
-            fi
-            echo "[OK] zip: kernel Image only, no dtbo"
+          if [[ "${{ env.CONFIG_STRATEGY }}" == "scarlet" ]]; then
+            echo "$LIST" | grep -qE '(^| )dtb$' || { echo "[ERROR] scarlet zip must contain dtb (device tree)"; exit 1; }
+            echo "$LIST" | grep -qi 'dtbo\.img' || { echo "[ERROR] scarlet zip must contain dtbo.img"; exit 1; }
+            echo "$LIST" | grep -qE 'Image\.gz-dtb' && { echo "[ERROR] zip must not contain Image.gz-dtb"; exit 1; }
+            echo "[OK] zip: Image + dtb + dtbo.img (Scarlet v5.0 layout)"
           fi
           rm -rf /tmp/ak3verify && mkdir -p /tmp/ak3verify
           7za e -y -o/tmp/ak3verify "$ZIP" anykernel.sh >/dev/null
@@ -1994,10 +2051,11 @@ jobs:
           grep -q 'do.modules=0' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh must have do.modules=0"; exit 1; }
           grep -q 'init.tuna.rc' /tmp/ak3verify/anykernel.sh && { echo "[ERROR] zip anykernel.sh contains tuna template patches"; exit 1; }
           grep -q 'write_boot;' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh missing write_boot"; exit 1; }
-          if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" || "${{ env.SUSFS_ENABLE }}" == "true" ]]; then
-            echo "$LIST" | grep -qE 'Image\.gz-dtb' && { echo "[ERROR] zip must not contain Image.gz-dtb"; exit 1; }
+          if [[ "${{ env.CONFIG_STRATEGY }}" == "scarlet" ]]; then
+            grep -q 'split_boot;' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh missing split_boot"; exit 1; }
+            grep -q 'flash_boot;' /tmp/ak3verify/anykernel.sh || { echo "[ERROR] zip anykernel.sh missing flash_boot"; exit 1; }
           fi
-          echo "[OK] anykernel.sh: minimal redwood script, do.systemless=0"
+          echo "[OK] anykernel.sh: Scarlet v5.0 boot+vendor_boot flash layout"
           echo "[OK] artifact integrity OK: $ZIP (${ZSZ} bytes)"
 
       - name: Upload kernel .config (debug)
