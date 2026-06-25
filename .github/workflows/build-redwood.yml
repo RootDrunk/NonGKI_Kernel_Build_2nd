@@ -431,6 +431,15 @@ jobs:
           fi
           echo "[OK] miui noks: ReSukiSU stripped (MiCode tree has no drivers/kernelsu in git)"
 
+      - name: Align MiCode kernel version to device 5.4.210-qgki
+        if: env.KERNEL_PROFILE == 'miui'
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          sed -i 's/^SUBLEVEL = 147/SUBLEVEL = 210/' Makefile
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' Makefile | head -3
+          echo "[OK] Makefile SUBLEVEL -> 210 (match device uname / vendor_dlkm vermagic)"
+
       - name: Install redwood stock config (device /proc/config.gz baseline)
         if: env.KERNEL_PROFILE == 'miui' || env.CONFIG_STRATEGY == 'stock'
         run: |
