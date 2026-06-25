@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v9.0.0 ★MIUI 开机修复：merge 真机 /proc/config.gz（redwood_stock.config）+ noks；勿用 QGKI 精简树（31MB→bootloop）。
 # v8.0.0 ★MIUI-only 默认路径：KERNEL_PROFILE=miui 时 CONFIG_STRATEGY=miui；校验/打包优先 miui 分支。
 # v7.2.8 ★MIUI noks：只 make Image（PACK 也是 Image-only）；OEM 模块依赖 vendor_dlkm 的 mi_disp_* → 跳过 modpost。
 # v7.2.7 ★MIUI vmlinux 链接：QGKI 缺 QCOM_SMEM/COMMON_CLK_QCOM/Pinctrl/QTEE 等 → platform fragment 对齐 stock。
@@ -263,13 +264,13 @@ jobs:
             echo "SUSFS_BOOT_TEST=true" >> $GITHUB_ENV
             echo "SUSFS_ENABLE=false" >> $GITHUB_ENV
             echo "ROM_TEXT=miui_v14_noks" >> $GITHUB_ENV
-            echo "CLANG_DIR_NAME=clang-r547379" >> $GITHUB_ENV
+            echo "CLANG_DIR_NAME=clang-r383902b" >> $GITHUB_ENV
             echo "KERNEL_CC=ccache clang --target=aarch64-linux-gnu" >> $GITHUB_ENV
             echo "EXTRA_CMDS=LD=ld.lld KCFLAGS=-Wno-error=strict-prototypes" >> $GITHUB_ENV
             echo "SKIP_KERNELSU_SETUP=true" >> $GITHUB_ENV
             echo "KERNEL_MAKE_TARGET=Image" >> $GITHUB_ENV
-            echo "MERGE_CONFIG_FILES=vendor/redwood_QGKI.config,vendor/redwood_noks.config,vendor/redwood_miui_platform.config" >> $GITHUB_ENV
-            echo "[OK] profile=miui — MiCode redwood-s-oss + LLVM clang-r547379"
+            echo "MERGE_CONFIG_FILES=vendor/redwood_stock.config,vendor/redwood_noks.config" >> $GITHUB_ENV
+            echo "[OK] profile=miui — MiCode redwood-s-oss + stock /proc/config.gz merge + clang-r383902b"
           else
             echo "KERNEL_SOURCE=https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git" >> $GITHUB_ENV
             echo "KERNEL_BRANCH=redwood" >> $GITHUB_ENV
@@ -287,8 +288,8 @@ jobs:
           set -euxo pipefail
           PREFERRED="${{ env.CLANG_DIR_NAME }}"
           if [ "${{ env.KERNEL_PROFILE }}" = "miui" ]; then
-            # r450784d 不在 mirror-goog-main-prebuilts sparse 树；按优先级尝试已知存在版本
-            CANDIDATES=("$PREFERRED" clang-r547379 clang-r487747c clang-r475365b)
+            # 对齐真机 5.4.210-qgki（clang 11.0.2 r383902b1）；新 clang 仍可编但优先 stock 工具链
+            CANDIDATES=("$PREFERRED" clang-r383902b clang-r416183b clang-r450784d clang-r487747c clang-r547379)
           else
             CANDIDATES=("$PREFERRED")
           fi
@@ -429,8 +430,8 @@ jobs:
           fi
           echo "[OK] miui noks: ReSukiSU stripped (MiCode tree has no drivers/kernelsu in git)"
 
-      - name: Install redwood stock config (v6 legacy, Scarlet tree only)
-        if: env.CONFIG_STRATEGY == 'stock' && env.KERNEL_PROFILE != 'miui'
+      - name: Install redwood stock config (device /proc/config.gz baseline)
+        if: env.KERNEL_PROFILE == 'miui' || env.CONFIG_STRATEGY == 'stock'
         run: |
           set -euxo pipefail
           SRC=""
@@ -585,32 +586,6 @@ jobs:
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_ksu.config (CONFIG_KSU=y only)"
 
-      - name: Write redwood MIUI platform overlay (vmlinux link + WiFi QMI)
-        if: env.KERNEL_PROFILE == 'miui'
-        run: |
-          set -euxo pipefail
-          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_miui_platform.config"
-          cat > "$FRAG" <<'EOF'
-          # v7.2.7: stock /proc/config.gz 有、QGKI-only merge 缺 → vmlinux undefined symbol
-          CONFIG_QCOM_SCM=y
-          CONFIG_QTEE_SHM_BRIDGE=y
-          CONFIG_QCOM_SMEM=y
-          CONFIG_QCOM_SMEM_STATE=y
-          CONFIG_COMMON_CLK_QCOM=y
-          CONFIG_PINCTRL_MSM=y
-          CONFIG_PINCTRL_YUPIK=y
-          CONFIG_MSM_PIL=y
-          CONFIG_QCOM_RPMH=y
-          CONFIG_ICNSS2_QMI=y
-          CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y
-          # mi_disp_* 由 vendor_dlkm 显示栈提供；编进 vmlinux 会走 techpack/DRM 花屏风险
-          # CONFIG_MI_THERMAL_INTERFACE is not set
-          # CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE is not set
-          # CONFIG_TOUCHSCREEN_GOODIX_BRL_9916_M20 is not set
-          EOF
-          sed -i 's/^          //' "$FRAG"
-          echo "[OK] wrote redwood_miui_platform.config (SMEM/CLK/Pinctrl/QTEE/PIL/RPMH/ICNSS2_QMI)"
-
       - name: Configure merge config paths (v7)
         run: |
           set -euxo pipefail
@@ -632,19 +607,18 @@ jobs:
             fi
           else
             if [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
-              MIUI_PLATFORM=",vendor/redwood_miui_platform.config"
               if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
-                MERGE="vendor/redwood_QGKI.config,vendor/redwood_noks.config${MIUI_PLATFORM}"
+                MERGE="vendor/redwood_stock.config,vendor/redwood_noks.config"
                 echo "ROM_TEXT=miui_v14_noks" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui gki + redwood_QGKI + noks + platform"
+                echo "[OK] merge: miui stock /proc/config.gz + noks (no KSU)"
               elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "ksu" ]]; then
-                MERGE="vendor/redwood_QGKI.config,vendor/redwood_ksu.config${MIUI_PLATFORM}"
+                MERGE="vendor/redwood_stock.config,vendor/redwood_ksu.config"
                 echo "ROM_TEXT=miui_v14_ksu" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui gki + redwood_QGKI + ksu + platform"
+                echo "[OK] merge: miui stock /proc/config.gz + ksu"
               else
-                MERGE="vendor/redwood_QGKI.config${MIUI_PLATFORM}"
+                MERGE="vendor/redwood_stock.config"
                 echo "ROM_TEXT=miui_v14" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui gki + redwood_QGKI + platform (ReSukiSU+SUSFS phase)"
+                echo "[OK] merge: miui stock /proc/config.gz (ReSukiSU+SUSFS phase)"
               fi
             elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
               MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_noks.config"
@@ -2207,17 +2181,23 @@ jobs:
           PROFILE="${{ env.KERNEL_PROFILE }}"
           STRAT="${{ env.CONFIG_STRATEGY }}"
           if [[ "$PROFILE" == "miui" ]]; then
-            [[ "$LINES" -gt 2500 ]] || fail ".config too short (${LINES} lines) — MiCode gki+redwood_QGKI merge failed?"
+            [[ "$LINES" -gt 6500 ]] || fail ".config too short (${LINES} lines) — stock merge failed?"
             must "CONFIG_QGKI=y"
             must "CONFIG_PINCTRL_REDWOOD=y"
             must "CONFIG_LTO_CLANG=y"
             must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
-            must "CONFIG_QCOM_SMEM=y"
-            must "CONFIG_COMMON_CLK_QCOM=y"
-            must "CONFIG_ICNSS2_QMI=y"
+            must "CONFIG_ARCH_YUPIK=y"
+            grep -q "^CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE=m" "$CFG" || fail "stock touchfeature must stay =m (vendor_dlkm)"
+            grep -q "^CONFIG_TOUCHSCREEN_GOODIX_BRL_9916_M20=m" "$CFG" || fail "stock goodix must stay =m"
+            grep -q "^CONFIG_MI_THERMAL_INTERFACE=m" "$CFG" || fail "stock mi_thermal must stay =m"
+            grep -q "^CONFIG_DRM_MSM=y" "$CFG" && fail "CONFIG_DRM_MSM must be off on MIUI"
+            IMG="$GITHUB_WORKSPACE/device_kernel/out/arch/${{ env.KERNEL_ARCH }}/boot/Image"
+            [[ -f "$IMG" ]] || fail "missing Image after build"
+            IMG_SZ=$(stat -c%s "$IMG")
+            [[ "$IMG_SZ" -gt 45000000 ]] || fail "Image too small (${IMG_SZ} bytes) — stock-aligned kernel should be ~49MB+"
             if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "${{ env.BOOT_TEST_PHASE }}" == "noks" ]]; then
               grep -q "^CONFIG_KSU=y" "$CFG" && fail "miui noks must NOT have CONFIG_KSU=y"
-              echo "[OK] miui noks: no KSU, Image-only boot test (MiCode + QGKI + platform)"
+              echo "[OK] miui noks: stock config + no KSU, Image ${IMG_SZ} bytes"
             elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
               must "CONFIG_KSU=y"
               echo "[OK] miui boot-test: CONFIG_KSU=y"
@@ -2226,7 +2206,7 @@ jobs:
               must "CONFIG_KSU_SUSFS=y"
               echo "[OK] miui phase-2: ReSukiSU + SUSFS"
             fi
-            echo "[OK] redwood .config verified (${LINES} lines, miui MiCode v8)"
+            echo "[OK] redwood .config verified (${LINES} lines, miui stock v9)"
           elif [[ "$STRAT" == "scarlet" ]]; then
             [[ "$LINES" -gt 2500 ]] || fail ".config too short (${LINES} lines) — scarlet defconfig merge failed?"
             must "CONFIG_ARCH_YUPIK=y"
