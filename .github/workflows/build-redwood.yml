@@ -3,6 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.4 ★MIUI profile：MiCode 官方树无 drivers/kernelsu — Strip/Restore Scarlet KSU 步骤仅 scarlet；
+#            miui noks 走独立 ReSukiSU 剥离；stock fixup（关 MACH_XIAOMI）仅 scarlet，miui 用 stock+noks merge。
 # v7.1.3 ★花屏二轮根因（run #77 编过仍花屏，真机刷入后确认）：
 #            dtb/dtbo 与官方 Scarlet-v5.0 zip **字节完全一致**（SHA256 相同）→ 排除 DT/打包问题。
 #            官方 Image 内嵌 ikconfig 显示 CONFIG_DRM_MSM=not set；我们 v7.1.0 误加 CONFIG_DRM_MSM=y →
@@ -270,7 +272,7 @@ jobs:
         uses: ./.github/workflows/build-ready
 
       - name: Restore Scarlet native KernelSU (boot-test ksu phase only)
-        if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'ksu'
+        if: env.KERNEL_PROFILE == 'scarlet' && env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'ksu'
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/device_kernel"
@@ -315,8 +317,8 @@ jobs:
           fi
           echo "[OK] boot-test uses Scarlet native KSU (expect dmesg ksuver 32486)"
 
-      - name: Strip ReSukiSU for noks boot-test
-        if: env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
+      - name: Strip ReSukiSU for noks boot-test (Scarlet)
+        if: env.KERNEL_PROFILE == 'scarlet' && env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/device_kernel"
@@ -342,6 +344,31 @@ jobs:
             exit 1
           fi
           echo "[OK] noks boot-test: ReSukiSU stripped, CONFIG_KSU off via redwood_noks.config"
+
+      - name: Strip ReSukiSU for noks boot-test (MiCode MIUI)
+        if: env.KERNEL_PROFILE == 'miui' && env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          rm -rf KernelSU KernelSU-Next
+          rm -f arch/${{ env.KERNEL_ARCH }}/configs/vendor/kernelsu.config
+          rm -f arch/${{ env.KERNEL_ARCH }}/configs/vendor/*kernelsu*.config
+          rm -rf drivers/kernelsu
+          HOOK_FILES=(
+            fs/exec.c fs/read_write.c fs/open.c fs/stat.c fs/devpts/inode.c
+            fs/namei.c drivers/input/input.c drivers/tty/pty.c
+            security/selinux/hooks.c security/selinux/selinuxfs.c
+            kernel/reboot.c kernel/sys.c
+            drivers/Makefile drivers/Kconfig
+          )
+          for f in "${HOOK_FILES[@]}"; do
+            git checkout HEAD -- "$f" 2>/dev/null || true
+          done
+          if grep -q 'ksu_handle_selinux_setprocattr' security/selinux/hooks.c 2>/dev/null; then
+            echo "[ERROR] hooks.c still has ReSukiSU ksu_handle_selinux_setprocattr"
+            exit 1
+          fi
+          echo "[OK] miui noks: ReSukiSU stripped (MiCode tree has no drivers/kernelsu in git)"
 
       - name: Install redwood stock config (v6 legacy)
         if: env.CONFIG_STRATEGY == 'stock'
@@ -425,8 +452,8 @@ jobs:
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_scarlet_min.config (v7.1.3: MACH_XIAOMI/REDWOOD/DT_OVERLAY on, DRM_MSM off → vendor_dlkm display + LTO/CFI)"
 
-      - name: Write redwood stock fixup overlay (v6 legacy)
-        if: env.CONFIG_STRATEGY == 'stock'
+      - name: Write redwood stock fixup overlay (v6 legacy, Scarlet only)
+        if: env.CONFIG_STRATEGY == 'stock' && env.KERNEL_PROFILE == 'scarlet'
         run: |
           set -euxo pipefail
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock_fixup.config"
@@ -519,7 +546,25 @@ jobs:
               echo "[OK] merge: scarlet min (phase-2 ReSukiSU via build-ready)"
             fi
           else
-            if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+            if [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
+              if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
+                MERGE="vendor/redwood_stock.config,vendor/redwood_noks.config"
+                echo "ROM_TEXT=miui_v14_noks" >> "$GITHUB_ENV"
+                echo "[OK] merge: miui stock + noks (KSU off, no Scarlet fixup)"
+              elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "ksu" ]]; then
+                MERGE="vendor/redwood_stock.config,vendor/redwood_ksu.config"
+                echo "ROM_TEXT=miui_v14_ksu" >> "$GITHUB_ENV"
+                echo "[OK] merge: miui stock + ksu"
+              else
+                MERGE="vendor/redwood_stock.config"
+                echo "ROM_TEXT=miui_v14" >> "$GITHUB_ENV"
+                echo "[OK] merge: miui stock (ReSukiSU+SUSFS phase)"
+              fi
+            elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
+              MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_noks.config"
+              echo "ROM_TEXT=crdroid_a16_noks" >> "$GITHUB_ENV"
+              echo "[OK] merge: stock + fixup + noks"
+            elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
               MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_ksu.config"
               echo "ROM_TEXT=crdroid_a16_ksu" >> "$GITHUB_ENV"
               echo "[OK] merge: stock + fixup + ksu (legacy v6 boot-test)"
