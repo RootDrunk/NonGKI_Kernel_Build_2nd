@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.2.7 ★MIUI vmlinux 链接：QGKI 缺 QCOM_SMEM/COMMON_CLK_QCOM/Pinctrl/QTEE 等 → platform fragment 对齐 stock。
 # v7.2.6 ★MIUI WiFi：merge CONFIG_ICNSS2_QMI=y（stock 有、QGKI 缺）→ 避免 qmi.h stub 重复定义。
 # v7.2.5 ★MIUI：编译前 gate 强制 sed xiaomi_touch.c；(void) 补丁 + KCFLAGS 兜底。
 # v7.2.4 ★MIUI compile：xiaomi_touch.c 三处 K&R 空参 () → (void)（clang -Wstrict-prototypes -Werror）。
@@ -263,7 +264,7 @@ jobs:
             echo "KERNEL_CC=ccache clang --target=aarch64-linux-gnu" >> $GITHUB_ENV
             echo "EXTRA_CMDS=LD=ld.lld KCFLAGS=-Wno-error=strict-prototypes" >> $GITHUB_ENV
             echo "SKIP_KERNELSU_SETUP=true" >> $GITHUB_ENV
-            echo "MERGE_CONFIG_FILES=vendor/redwood_QGKI.config,vendor/redwood_noks.config,vendor/redwood_miui_wifi.config" >> $GITHUB_ENV
+            echo "MERGE_CONFIG_FILES=vendor/redwood_QGKI.config,vendor/redwood_noks.config,vendor/redwood_miui_platform.config" >> $GITHUB_ENV
             echo "[OK] profile=miui — MiCode redwood-s-oss + LLVM clang-r547379"
           else
             echo "KERNEL_SOURCE=https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git" >> $GITHUB_ENV
@@ -580,17 +581,26 @@ jobs:
           sed -i 's/^          //' "$FRAG"
           echo "[OK] wrote redwood_ksu.config (CONFIG_KSU=y only)"
 
-      - name: Write redwood MIUI WiFi overlay (ICNSS2_QMI stock-aligned)
+      - name: Write redwood MIUI platform overlay (vmlinux link + WiFi QMI)
         if: env.KERNEL_PROFILE == 'miui'
         run: |
           set -euxo pipefail
-          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_miui_wifi.config"
+          FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_miui_platform.config"
           cat > "$FRAG" <<'EOF'
-          # v7.2.6: stock /proc/config.gz CONFIG_ICNSS2_QMI=y；仅 QGKI merge 时缺此项会走 qmi.h 损坏 stub
+          # v7.2.7: stock /proc/config.gz 有、QGKI-only merge 缺 → vmlinux undefined symbol
+          CONFIG_QCOM_SCM=y
+          CONFIG_QTEE_SHM_BRIDGE=y
+          CONFIG_QCOM_SMEM=y
+          CONFIG_QCOM_SMEM_STATE=y
+          CONFIG_COMMON_CLK_QCOM=y
+          CONFIG_PINCTRL_MSM=y
+          CONFIG_PINCTRL_YUPIK=y
+          CONFIG_MSM_PIL=y
+          CONFIG_QCOM_RPMH=y
           CONFIG_ICNSS2_QMI=y
           EOF
           sed -i 's/^          //' "$FRAG"
-          echo "[OK] wrote redwood_miui_wifi.config (CONFIG_ICNSS2_QMI=y)"
+          echo "[OK] wrote redwood_miui_platform.config (SMEM/CLK/Pinctrl/QTEE/PIL/RPMH/ICNSS2_QMI)"
 
       - name: Configure merge config paths (v7)
         run: |
@@ -613,19 +623,19 @@ jobs:
             fi
           else
             if [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
-              MIUI_WIFI=",vendor/redwood_miui_wifi.config"
+              MIUI_PLATFORM=",vendor/redwood_miui_platform.config"
               if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
-                MERGE="vendor/redwood_QGKI.config,vendor/redwood_noks.config${MIUI_WIFI}"
+                MERGE="vendor/redwood_QGKI.config,vendor/redwood_noks.config${MIUI_PLATFORM}"
                 echo "ROM_TEXT=miui_v14_noks" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui gki + redwood_QGKI + noks + ICNSS2_QMI"
+                echo "[OK] merge: miui gki + redwood_QGKI + noks + platform"
               elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "ksu" ]]; then
-                MERGE="vendor/redwood_QGKI.config,vendor/redwood_ksu.config${MIUI_WIFI}"
+                MERGE="vendor/redwood_QGKI.config,vendor/redwood_ksu.config${MIUI_PLATFORM}"
                 echo "ROM_TEXT=miui_v14_ksu" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui gki + redwood_QGKI + ksu + ICNSS2_QMI"
+                echo "[OK] merge: miui gki + redwood_QGKI + ksu + platform"
               else
-                MERGE="vendor/redwood_QGKI.config${MIUI_WIFI}"
+                MERGE="vendor/redwood_QGKI.config${MIUI_PLATFORM}"
                 echo "ROM_TEXT=miui_v14" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui gki + redwood_QGKI + ICNSS2_QMI (ReSukiSU+SUSFS phase)"
+                echo "[OK] merge: miui gki + redwood_QGKI + platform (ReSukiSU+SUSFS phase)"
               fi
             elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
               MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_noks.config"
