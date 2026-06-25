@@ -3,9 +3,10 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.2.1 ★MIUI clang：mirror-goog-main-prebuilts 无 clang-r450784d → 回退 r547379 + 候选链。
 # v7.2.0 ★clang 修复：删除对 AOSP Go 包装 clang 的重命名 wrapper（command.go:142 clang-bin 报错）；
 #            改 build-process CC="ccache clang --target=aarch64-linux-gnu"。
-#            MIUI profile 用 clang-r450784d（Android13 时代 LLVM）；Scarlet 仍 r547379。
+#            MIUI/Scarlet 均优先 mirror 内存在的 clang-r547379（r450784d 不在 sparse mirror）。
 #            步骤名「Android 内核 LLVM」≠ crDroid ROM；小米 QGKI 标准即 Google prebuilts clang。
 # v7.1.7 ★clang 交叉编译：build-process 用 CC="ccache clang" 时缺 --target=aarch64-linux-gnu
 #            → atomic_lse.h 报 unknown register x0/x2；wrapper 注入 --target。
@@ -135,7 +136,7 @@ env:
   KERNEL_CC: "ccache clang --target=aarch64-linux-gnu"
 
   # clang14(r416183b) 编 Scarlet 5.4 易触发 crypto.c 硬错误；Scarlet 用 clang20(r547379)
-  # MIUI MiCode redwood-s-oss 为 Android13 时代 → Resolve profile 会覆盖为 clang-r450784d
+  # MIUI MiCode 与 Scarlet 均用 mirror 已验证存在的 clang-r547379
   CLANG_SOURCE : "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
   CLANG_BRANCH : "mirror-goog-main-prebuilts"
   CLANG_DIR_NAME : "clang-r547379"
@@ -253,11 +254,11 @@ jobs:
             echo "SUSFS_BOOT_TEST=true" >> $GITHUB_ENV
             echo "SUSFS_ENABLE=false" >> $GITHUB_ENV
             echo "ROM_TEXT=miui_v14_noks" >> $GITHUB_ENV
-            echo "CLANG_DIR_NAME=clang-r450784d" >> $GITHUB_ENV
+            echo "CLANG_DIR_NAME=clang-r547379" >> $GITHUB_ENV
             echo "KERNEL_CC=ccache clang --target=aarch64-linux-gnu" >> $GITHUB_ENV
             echo "SKIP_KERNELSU_SETUP=true" >> $GITHUB_ENV
             echo "MERGE_CONFIG_FILES=vendor/redwood_QGKI.config,vendor/redwood_noks.config" >> $GITHUB_ENV
-            echo "[OK] profile=miui — MiCode redwood-s-oss + Android13 LLVM (clang-r450784d)"
+            echo "[OK] profile=miui — MiCode redwood-s-oss + LLVM clang-r547379"
           else
             echo "KERNEL_SOURCE=https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git" >> $GITHUB_ENV
             echo "KERNEL_BRANCH=redwood" >> $GITHUB_ENV
@@ -273,20 +274,40 @@ jobs:
       - name: Fetch Android kernel LLVM toolchain (Google prebuilts, not crDroid ROM)
         run: |
           set -euxo pipefail
+          PREFERRED="${{ env.CLANG_DIR_NAME }}"
+          if [ "${{ env.KERNEL_PROFILE }}" = "miui" ]; then
+            # r450784d 不在 mirror-goog-main-prebuilts sparse 树；按优先级尝试已知存在版本
+            CANDIDATES=("$PREFERRED" clang-r547379 clang-r487747c clang-r475365b)
+          else
+            CANDIDATES=("$PREFERRED")
+          fi
           rm -rf clang-custom clang-sparse
           git clone --depth=1 --filter=blob:none --sparse \
             -b "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_SOURCE }}" clang-sparse
           cd clang-sparse
-          git sparse-checkout set "${{ env.CLANG_DIR_NAME }}"
-          test -x "${{ env.CLANG_DIR_NAME }}/bin/clang" || { echo "[ERROR] clang missing in ${{ env.CLANG_DIR_NAME }}"; ls -la "${{ env.CLANG_DIR_NAME }}/bin" || true; exit 1; }
+          FOUND=""
+          for dir in "${CANDIDATES[@]}"; do
+            git sparse-checkout set "$dir"
+            if test -x "${dir}/bin/clang"; then
+              FOUND="$dir"
+              break
+            fi
+            echo "[warn] clang missing in sparse tree: $dir"
+          done
+          if [ -z "$FOUND" ]; then
+            echo "[ERROR] no usable clang among: ${CANDIDATES[*]}"
+            ls -la || true
+            exit 1
+          fi
           mkdir -p ../clang-custom
-          cp -a "${{ env.CLANG_DIR_NAME }}"/* ../clang-custom/
+          cp -a "${FOUND}"/* ../clang-custom/
           cd ..
           rm -rf clang-sparse
+          echo "CLANG_DIR_NAME=${FOUND}" >> "$GITHUB_ENV"
           clang-custom/bin/clang --version
           clang-custom/bin/clang --target=aarch64-linux-gnu -x c -c /dev/null -o /tmp/clang-aarch64-test.o
           rm -f /tmp/clang-aarch64-test.o
-          echo "[OK] clang-custom -> ${{ env.CLANG_DIR_NAME }} (QGKI/MIUI 标准 Android 内核交叉编译 LLVM)"
+          echo "[OK] clang-custom -> ${FOUND} (QGKI/MIUI 标准 Android 内核交叉编译 LLVM)"
 
       - name: Compilation environment preparation
         uses: ./.github/workflows/build-env
