@@ -3,6 +3,14 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.2 ★链接修复（run #76 vmlinux 链接期 ld.lld duplicate symbol，21 个）：开 DRM_MSM=y 后暴露高通 techpack 树经典坑——
+#            上游 mainline drivers/gpu/drm/msm 与 techpack/display + drivers/gpu/msm(KGSL) 是同一批 msm 源码的两份拷贝，
+#            且两棵都被同一个 CONFIG_DRM_MSM 门控（drivers/gpu/drm/Makefile 与 techpack/display/Makefile 各一行 obj-$(CONFIG_DRM_MSM)+=msm/）。
+#            DRM_MSM=y → 两棵全编 → msm_atomic/msm_fb/msm_iommu/msm_gem_prime/a6xx_gmu/a6xx_hfi 等重复定义。
+#            真驱动是 techpack/display(SDE/MDSS/DSI) + drivers/gpu/msm(KGSL/Adreno)，上游 drm/msm 在 QGKI 平台从不使用。
+#            修复（步骤24 编译修复内，对所有 strategy 幂等）：注释 drivers/gpu/drm/Makefile 的 `obj-$(CONFIG_DRM_MSM) += msm/`，
+#            只关上游那棵；techpack/display 由自己 Makefile + DRM_MSM=y 继续编。DRM_MSM=y 与校验门保持不变（techpack 仍需它）。
+#            一刀同治两类重复（display 撞 techpack、adreno 撞 KGSL，因 adreno 是 drivers/gpu/drm/msm 的子目录）。
 # v7.1.1 环境修复（run #75 卡在 env-prep）：build-env/action.yml 下载 libtinfo5 用写死 launchpad URL 且 CURLX 无 -f，
 #            偶发返回错误页被当成 .deb → "Invalid archive signature" → exit 100（与显示修复无关）。
 #            改为：先 apt，再 curl -fL + dpkg-deb 校验 + 多镜像兜底，全失败不硬炸。（此条同时让 push 命中触发路径以重编）
@@ -901,6 +909,31 @@ jobs:
                       print("[+] dts Makefile: ARCH_YUPIK redwood overlay dtbo for AK3 pack (guarded ifneq MACH_XIAOMI)")
           else:
               errors.append(f"missing {dt_mk}")
+
+          # v7.1.2: 上游 mainline drivers/gpu/drm/msm 与 techpack/display + drivers/gpu/msm(KGSL) 同名符号冲突
+          #   两棵 msm 树都被 CONFIG_DRM_MSM 门控（drivers/gpu/drm/Makefile 与 techpack/display/Makefile 各有一行）；
+          #   DRM_MSM=y 时上游那棵会重复定义 msm_atomic/msm_fb/msm_iommu/msm_gem_prime/a6xx_gmu/a6xx_hfi 等
+          #   → ld.lld duplicate symbol（display 撞 techpack、adreno 撞 KGSL）。
+          #   高通 QGKI(redwood/SM7325) 真正显示驱动是 techpack/display，GPU 是 drivers/gpu/msm(KGSL)；
+          #   上游 drm/msm 永不该编 → 从 drivers/gpu/drm/Makefile 摘掉 msm/，techpack 仍由自己 Makefile+DRM_MSM=y 编。
+          drm_mk = root / "drivers/gpu/drm/Makefile"
+          if drm_mk.is_file():
+              text = drm_mk.read_text()
+              marker = "# redwood: upstream drm/msm disabled (dup symbols vs techpack/display + KGSL)"
+              if marker in text:
+                  print("[=] drm/Makefile: upstream msm/ already disabled")
+              elif "obj-$(CONFIG_DRM_MSM) += msm/" in text:
+                  text = text.replace(
+                      "obj-$(CONFIG_DRM_MSM) += msm/",
+                      marker + "\n#obj-$(CONFIG_DRM_MSM) += msm/",
+                      1,
+                  )
+                  drm_mk.write_text(text)
+                  print("[+] drm/Makefile: 注释上游 obj-$(CONFIG_DRM_MSM) += msm/（只保留 techpack/display）")
+              else:
+                  print("[!] drm/Makefile: 未找到 obj-$(CONFIG_DRM_MSM) += msm/（树结构可能已变，跳过）")
+          else:
+              errors.append(f"missing {drm_mk}")
 
           # fixup 关 FTRACE 后 tracepoint 桩不存在；若 olddefconfig 仍留 SCHEDSTATS=y 会炸 stats.h:60
           stats_h = root / "kernel/sched/stats.h"
