@@ -3,6 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.6 ★MIUI defconfig：vendor/redwood_QGKI.config 是 fragment，须 gki_defconfig 打底再 merge；
+#            勿 merge Scarlet 的 redwood_stock.config（/proc/config.gz 来自另一棵树）。
 # v7.1.5 ★MIUI compile fixes：MiCode 树跳过 Scarlet Python 补丁集（无 drivers/kernelsu / 不同 dts/binder 结构）；
 #            config 校验与 AK3 打包走 miui 专用分支（Image-only boot 替换，非 crDroid vendor_boot）。
 # v7.1.4 ★MIUI profile：MiCode 官方树无 drivers/kernelsu — Strip/Restore Scarlet KSU 步骤仅 scarlet；
@@ -232,13 +234,13 @@ jobs:
           if [ "$PROFILE" = "miui" ]; then
             echo "KERNEL_SOURCE=https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git" >> $GITHUB_ENV
             echo "KERNEL_BRANCH=redwood-s-oss" >> $GITHUB_ENV
-            echo "DEFCONFIG_NAME=vendor/redwood_QGKI.config" >> $GITHUB_ENV
+            echo "DEFCONFIG_NAME=gki_defconfig" >> $GITHUB_ENV
             echo "CONFIG_STRATEGY=stock" >> $GITHUB_ENV
             echo "BOOT_TEST_PHASE=noks" >> $GITHUB_ENV
             echo "SUSFS_BOOT_TEST=true" >> $GITHUB_ENV
             echo "SUSFS_ENABLE=false" >> $GITHUB_ENV
             echo "ROM_TEXT=miui_v14_noks" >> $GITHUB_ENV
-            echo "[OK] profile=miui — MiCode redwood-s-oss + stock merge（MIUI 原系统，避免花屏）"
+            echo "[OK] profile=miui — MiCode redwood-s-oss: gki_defconfig + vendor/redwood_QGKI.config merge"
           else
             echo "KERNEL_SOURCE=https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git" >> $GITHUB_ENV
             echo "KERNEL_BRANCH=redwood" >> $GITHUB_ENV
@@ -372,8 +374,8 @@ jobs:
           fi
           echo "[OK] miui noks: ReSukiSU stripped (MiCode tree has no drivers/kernelsu in git)"
 
-      - name: Install redwood stock config (v6 legacy)
-        if: env.CONFIG_STRATEGY == 'stock'
+      - name: Install redwood stock config (v6 legacy, Scarlet tree only)
+        if: env.CONFIG_STRATEGY == 'stock' && env.KERNEL_PROFILE != 'miui'
         run: |
           set -euxo pipefail
           SRC=""
@@ -550,17 +552,17 @@ jobs:
           else
             if [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
               if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
-                MERGE="vendor/redwood_stock.config,vendor/redwood_noks.config"
+                MERGE="vendor/redwood_QGKI.config,vendor/redwood_noks.config"
                 echo "ROM_TEXT=miui_v14_noks" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui stock + noks (KSU off, no Scarlet fixup)"
+                echo "[OK] merge: miui gki + redwood_QGKI + noks (no Scarlet stock.config)"
               elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "ksu" ]]; then
-                MERGE="vendor/redwood_stock.config,vendor/redwood_ksu.config"
+                MERGE="vendor/redwood_QGKI.config,vendor/redwood_ksu.config"
                 echo "ROM_TEXT=miui_v14_ksu" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui stock + ksu"
+                echo "[OK] merge: miui gki + redwood_QGKI + ksu"
               else
-                MERGE="vendor/redwood_stock.config"
+                MERGE="vendor/redwood_QGKI.config"
                 echo "ROM_TEXT=miui_v14" >> "$GITHUB_ENV"
-                echo "[OK] merge: miui stock (ReSukiSU+SUSFS phase)"
+                echo "[OK] merge: miui gki + redwood_QGKI (ReSukiSU+SUSFS phase)"
               fi
             elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "$PHASE" == "noks" ]]; then
               MERGE="vendor/redwood_stock.config,vendor/redwood_stock_fixup.config,vendor/redwood_noks.config"
@@ -2106,11 +2108,12 @@ jobs:
             fi
             echo "[OK] redwood .config verified (${LINES} lines, scarlet v7)"
           elif [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
-            [[ "$LINES" -gt 5000 ]] || fail ".config too short (${LINES} lines) — MiCode stock merge failed?"
-            must "CONFIG_ARCH_YUPIK=y"
-            must "CONFIG_MACH_XIAOMI=y"
+            [[ "$LINES" -gt 2500 ]] || fail ".config too short (${LINES} lines) — MiCode gki+redwood_QGKI merge failed?"
+            must "CONFIG_QGKI=y"
+            must "CONFIG_PINCTRL_REDWOOD=y"
             must "CONFIG_LTO_CLANG=y"
             must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
+            grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && echo "[OK] miui: MACH_XIAOMI=y" || echo "[i] miui: MACH_XIAOMI not set (may come from DT/platform)"
             if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "${{ env.BOOT_TEST_PHASE }}" == "noks" ]]; then
               grep -q "^CONFIG_KSU=y" "$CFG" && fail "miui noks must NOT have CONFIG_KSU=y"
               echo "[OK] miui noks: no KSU (pure MiCode kernel boot test)"
