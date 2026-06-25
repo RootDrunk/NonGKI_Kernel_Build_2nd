@@ -3,6 +3,16 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.0 ★花屏真根因（v7.0.13 noks 仍花屏后定位）：自编 .config 实测 `# CONFIG_DRM_MSM is not set`
+#            → vmlinux 完全没有 MSM 显示驱动(SDE/MDSS/DSI) → 必然花屏。v7.0.11「dtb/dtbo 字节一致仅 Image 不同」
+#            的判断是错的：Image 缺整个显示驱动。根因链：scarlet_min 强关 MACH_XIAOMI + BUILD_ARM64_DT_OVERLAY
+#            （误判 crDroid 需关，实则官方 boot.img 两者皆开）→ DRM_MSM 经 MACH_XIAOMI 的连锁选择被关闭。
+#            修复（对齐官方 xiaomi-qgki_defconfig 配方）：
+#              ① scarlet_min 改为 MACH_XIAOMI=y + MACH_XIAOMI_REDWOOD=y + BUILD_ARM64_DT_OVERLAY=y + DRM_MSM=y
+#              ② lpm-levels.c 保留原始 get_panel/EPROBE_DEFER（DRM_MSM=y 时 techpack 提供真 get_panel，无需删/桩）
+#              ③ dts Makefile 兜底 dtbo 规则加 ifneq MACH_XIAOMI 守卫（主块已生成，避免重复 dtbo-y）
+#              ④ scarlet 校验门翻转：必须 DT_OVERLAY=y + MACH_XIAOMI(_REDWOOD)=y + DRM_MSM=y
+#            注：开启完整显示栈会新编 techpack display/camera 等代码，可能暴露 1~2 个新编译错误，需按 CI 日志迭代。
 # v7.0.13 二分：阶段 A noks — SUSFS_BOOT_TEST=true + SUSFS_ENABLE=false + BOOT_TEST_PHASE=noks
 #            纯 Scarlet 重编译（无 ReSukiSU/SUSFS），验证自编 overlay 是否导致花屏。
 # v7.0.12 修复：make dtbs 已由 redwood-scarlet-ak3-dtbo 生成 dtbo.img；不再 curl googlesource
@@ -318,8 +328,14 @@ jobs:
           FRAG="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_scarlet_min.config"
           cat > "$FRAG" <<'EOF'
           # v7 scarlet-minimal — 仅 crDroid sideload 必需项；其余保持 xiaomi-qgki_defconfig（接近 Scarlet 官方 boot.img）
-          # CONFIG_MACH_XIAOMI is not set
-          # CONFIG_BUILD_ARM64_DT_OVERLAY is not set
+          #
+          # v7.1.0 花屏根因修复：自编 .config 实测 `# CONFIG_DRM_MSM is not set` → vmlinux 无 MSM 显示驱动(SDE/MDSS/DSI) → 刷机花屏。
+          #   官方 xiaomi-qgki_defconfig 本就 MACH_XIAOMI=y + BUILD_ARM64_DT_OVERLAY=y，DRM_MSM 经 MACH_XIAOMI 自动选入。
+          #   此前 v7.x 在此强关 MACH_XIAOMI/DT_OVERLAY（误判 crDroid 需关）→ 连锁关闭 DRM_MSM。现改回官方配方并显式坐实：
+          CONFIG_MACH_XIAOMI=y
+          CONFIG_MACH_XIAOMI_REDWOOD=y
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          CONFIG_DRM_MSM=y
           CONFIG_LOCALVERSION="-Scarlet-v5.0"
           # CONFIG_LOCALVERSION_AUTO is not set
           #
@@ -353,7 +369,7 @@ jobs:
           # CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
           EOF
           sed -i 's/^          //' "$FRAG"
-          echo "[OK] wrote redwood_scarlet_min.config (MACH_XIAOMI off + LTO/CFI + LOCALVERSION)"
+          echo "[OK] wrote redwood_scarlet_min.config (v7.1.0: MACH_XIAOMI/REDWOOD/DT_OVERLAY/DRM_MSM on → 修复花屏 + LTO/CFI + LOCALVERSION)"
 
       - name: Write redwood stock fixup overlay (v6 legacy)
         if: env.CONFIG_STRATEGY == 'stock'
@@ -862,20 +878,24 @@ jobs:
               else:
                   errors.append("dts Makefile: cannot patch Xiaomi overlay hard error")
               # v7.0.9: scarlet 关 MACH_XIAOMI 时仍须编 redwood overlay dtbo（官方 zip 含 dtbo.img）
+              # v7.1.0: 现 scarlet 用 MACH_XIAOMI=y，上面主块已生成 redwood overlay dtbo；
+              #   兜底规则加 ifneq MACH_XIAOMI 守卫，避免与主块重复定义 dtbo-y（make: overriding recipe）。
               if config_strategy == "scarlet":
                   marker = "redwood-scarlet-ak3-dtbo"
                   if marker in text:
                       print("[=] dts Makefile: scarlet ak3 dtbo rule already present")
                   else:
                       text = text.rstrip() + (
-                          "\n\n# redwood-scarlet-ak3-dtbo: pack dtbo.img like official Scarlet v5.0\n"
+                          "\n\n# redwood-scarlet-ak3-dtbo: only when MACH_XIAOMI off (else main Xiaomi block builds it)\n"
+                          "ifneq ($(CONFIG_MACH_XIAOMI),y)\n"
                           "ifeq ($(CONFIG_ARCH_YUPIK), y)\n"
                           "dtbo-y += redwood-sm7325-overlay.dtbo\n"
                           "redwood-sm7325-overlay.dtbo-base := yupik.dtb\n"
                           "endif\n"
+                          "endif\n"
                       )
                       dt_mk.write_text(text)
-                      print("[+] dts Makefile: ARCH_YUPIK redwood overlay dtbo for AK3 pack")
+                      print("[+] dts Makefile: ARCH_YUPIK redwood overlay dtbo for AK3 pack (guarded ifneq MACH_XIAOMI)")
           else:
               errors.append(f"missing {dt_mk}")
 
@@ -1665,35 +1685,10 @@ jobs:
                       qcom_mk.write_text(mk_text)
                       print("[+] scarlet: unwired redwood_vmlinux_link_shims.o from qcom Makefile")
 
-              if lpm.is_file():
-                  lpm_text = lpm.read_text()
-                  if lpm_scarlet_marker in lpm_text:
-                      print("[=] lpm-levels.c: scarlet no-get_panel patch already present")
-                  else:
-                      lpm_panel_block = (
-                          "#ifdef CONFIG_DRM_PANEL\n"
-                          "\tstruct drm_panel *active_panel = get_panel();\n\n"
-                          "\tif (!active_panel)\n"
-                          "\t\treturn -EPROBE_DEFER;\n\n"
-                          "\tret = drm_panel_notifier_register(active_panel, &drm_notifier);\n"
-                          "\tif (ret)\n"
-                          "\t\tpr_err(\"Failed to register DRM panel notifier, ret=%d\\n\", ret);\n"
-                          "\telse\n"
-                          "\t\tpr_info(\"Registered DRM panel notifier\\n\");\n"
-                          "#endif\n"
-                      )
-                      lpm_replacement = (
-                          "#ifdef CONFIG_DRM_PANEL\n"
-                          f"\t/* {lpm_scarlet_marker}: OSS Scarlet 无 get_panel；跳过 cpuidle panel notifier */\n"
-                          "#endif\n"
-                      )
-                      if lpm_panel_block not in lpm_text:
-                          errors.append("lpm-levels.c: CONFIG_DRM_PANEL block not found for scarlet patch")
-                      else:
-                          lpm.write_text(lpm_text.replace(lpm_panel_block, lpm_replacement, 1))
-                          print("[+] lpm-levels.c: scarlet skip get_panel/panel notifier (fix garbled screen)")
-              else:
-                  errors.append(f"missing {lpm}")
+              # v7.1.0: DRM_MSM=y → techpack 显示驱动(SDE/DSI)提供真正的 get_panel；保留 lpm-levels.c 原始
+              #   EPROBE_DEFER/panel-notifier 逻辑（对齐官方）。此前删它是基于「OSS Scarlet 无 get_panel」的误判，
+              #   实为 DRM_MSM 被连锁关闭。现 get_panel 由 vmlinux 内 techpack 提供，无需改源码即可链接+正常驱动面板。
+              print("[=] lpm-levels.c: left untouched (DRM_MSM=y provides get_panel; official cpuidle panel-notifier behavior)")
 
           # v6.0.15: fixup 关 ARCH_LAHAINA 后，dataipa/Makefile 的 LAHAINA 专用块不跑 → GSI 未编进 vmlinux
           dataipa_mk = root / "techpack/dataipa/drivers/platform/msm/Makefile"
@@ -1896,8 +1891,11 @@ jobs:
             must "CONFIG_ARCH_LAHAINA=y"
             must "CONFIG_PINCTRL_YUPIK=y"
             must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
-            grep -q "^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set" "$CFG" || fail "BUILD_ARM64_DT_OVERLAY must be disabled (crDroid dtbo path)"
-            grep -q "^CONFIG_MACH_XIAOMI=y" "$CFG" && fail "MACH_XIAOMI must not be set"
+            # v7.1.0 花屏修复：官方配方 = MACH_XIAOMI=y + DT_OVERLAY=y → DRM_MSM=y（显示驱动）。缺 DRM_MSM 即花屏。
+            must "CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+            must "CONFIG_MACH_XIAOMI=y"
+            must "CONFIG_MACH_XIAOMI_REDWOOD=y"
+            must "CONFIG_DRM_MSM=y"
             grep -q 'CONFIG_LOCALVERSION="-Scarlet' "$CFG" || fail "LOCALVERSION should match Scarlet (redwood_scarlet_min.config)"
             grep -q '^CONFIG_MMC_CRYPTO=y' "$CFG" && fail "MMC_CRYPTO must be off (crypto.c compile/boot)"
             must "CONFIG_SCSI_UFS_CRYPTO=y"
