@@ -3,6 +3,14 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.3 ★花屏二轮根因（run #77 编过仍花屏，真机刷入后确认）：
+#            dtb/dtbo 与官方 Scarlet-v5.0 zip **字节完全一致**（SHA256 相同）→ 排除 DT/打包问题。
+#            官方 Image 内嵌 ikconfig 显示 CONFIG_DRM_MSM=not set；我们 v7.1.0 误加 CONFIG_DRM_MSM=y →
+#            vmlinux 编入 techpack 显示驱动，与 crDroid vendor_dlkm 显示模块**双栈冲突** → 花屏。
+#            v7.0.13 花屏则是 DT_OVERLAY 关（dtbo 不生效）；v7.1.x 则是 DRM_MSM 开错。
+#            修复：scarlet_min 保留 MACH_XIAOMI/REDWOOD/DT_OVERLAY（让 dtbo 生效），显式 `# CONFIG_DRM_MSM is not set`
+#            （对齐官方：显示由 vendor_dlkm 负责）；恢复 scarlet lpm-levels 去 get_panel 补丁（v7.0.11 逻辑）；
+#            校验门翻转：必须 DT_OVERLAY=y，禁止 CONFIG_DRM_MSM=y。v7.1.2 drm/Makefile 补丁保留（DRM_MSM off 时幂等跳过）。
 # v7.1.2 ★链接修复（run #76 vmlinux 链接期 ld.lld duplicate symbol，21 个）：开 DRM_MSM=y 后暴露高通 techpack 树经典坑——
 #            上游 mainline drivers/gpu/drm/msm 与 techpack/display + drivers/gpu/msm(KGSL) 是同一批 msm 源码的两份拷贝，
 #            且两棵都被同一个 CONFIG_DRM_MSM 门控（drivers/gpu/drm/Makefile 与 techpack/display/Makefile 各一行 obj-$(CONFIG_DRM_MSM)+=msm/）。
@@ -340,13 +348,12 @@ jobs:
           cat > "$FRAG" <<'EOF'
           # v7 scarlet-minimal — 仅 crDroid sideload 必需项；其余保持 xiaomi-qgki_defconfig（接近 Scarlet 官方 boot.img）
           #
-          # v7.1.0 花屏根因修复：自编 .config 实测 `# CONFIG_DRM_MSM is not set` → vmlinux 无 MSM 显示驱动(SDE/MDSS/DSI) → 刷机花屏。
-          #   官方 xiaomi-qgki_defconfig 本就 MACH_XIAOMI=y + BUILD_ARM64_DT_OVERLAY=y，DRM_MSM 经 MACH_XIAOMI 自动选入。
-          #   此前 v7.x 在此强关 MACH_XIAOMI/DT_OVERLAY（误判 crDroid 需关）→ 连锁关闭 DRM_MSM。现改回官方配方并显式坐实：
+          # v7.1.3 花屏二轮：dtb/dtbo 已与官方一致，Image 内勿编 DRM_MSM（vendor_dlkm 显示）。
+          # v7.1.0 误判「缺 DRM_MSM」；实为 v7.0.x 缺 DT_OVERLAY。现保留 DT 配方，显式关内核显示：
           CONFIG_MACH_XIAOMI=y
           CONFIG_MACH_XIAOMI_REDWOOD=y
           CONFIG_BUILD_ARM64_DT_OVERLAY=y
-          CONFIG_DRM_MSM=y
+          # CONFIG_DRM_MSM is not set
           CONFIG_LOCALVERSION="-Scarlet-v5.0"
           # CONFIG_LOCALVERSION_AUTO is not set
           #
@@ -380,7 +387,7 @@ jobs:
           # CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
           EOF
           sed -i 's/^          //' "$FRAG"
-          echo "[OK] wrote redwood_scarlet_min.config (v7.1.0: MACH_XIAOMI/REDWOOD/DT_OVERLAY/DRM_MSM on → 修复花屏 + LTO/CFI + LOCALVERSION)"
+          echo "[OK] wrote redwood_scarlet_min.config (v7.1.3: MACH_XIAOMI/REDWOOD/DT_OVERLAY on, DRM_MSM off → vendor_dlkm display + LTO/CFI)"
 
       - name: Write redwood stock fixup overlay (v6 legacy)
         if: env.CONFIG_STRATEGY == 'stock'
@@ -1721,10 +1728,35 @@ jobs:
                       qcom_mk.write_text(mk_text)
                       print("[+] scarlet: unwired redwood_vmlinux_link_shims.o from qcom Makefile")
 
-              # v7.1.0: DRM_MSM=y → techpack 显示驱动(SDE/DSI)提供真正的 get_panel；保留 lpm-levels.c 原始
-              #   EPROBE_DEFER/panel-notifier 逻辑（对齐官方）。此前删它是基于「OSS Scarlet 无 get_panel」的误判，
-              #   实为 DRM_MSM 被连锁关闭。现 get_panel 由 vmlinux 内 techpack 提供，无需改源码即可链接+正常驱动面板。
-              print("[=] lpm-levels.c: left untouched (DRM_MSM=y provides get_panel; official cpuidle panel-notifier behavior)")
+              if lpm.is_file():
+                  lpm_text = lpm.read_text()
+                  if lpm_scarlet_marker in lpm_text:
+                      print("[=] lpm-levels.c: scarlet no-get_panel patch already present")
+                  else:
+                      lpm_panel_block = (
+                          "#ifdef CONFIG_DRM_PANEL\n"
+                          "\tstruct drm_panel *active_panel = get_panel();\n\n"
+                          "\tif (!active_panel)\n"
+                          "\t\treturn -EPROBE_DEFER;\n\n"
+                          "\tret = drm_panel_notifier_register(active_panel, &drm_notifier);\n"
+                          "\tif (ret)\n"
+                          "\t\tpr_err(\"Failed to register DRM panel notifier, ret=%d\\n\", ret);\n"
+                          "\telse\n"
+                          "\t\tpr_info(\"Registered DRM panel notifier\\n\");\n"
+                          "#endif\n"
+                      )
+                      lpm_replacement = (
+                          "#ifdef CONFIG_DRM_PANEL\n"
+                          f"\t/* {lpm_scarlet_marker}: display in vendor_dlkm; skip cpuidle panel notifier */\n"
+                          "#endif\n"
+                      )
+                      if lpm_panel_block not in lpm_text:
+                          errors.append("lpm-levels.c: CONFIG_DRM_PANEL block not found for scarlet patch")
+                      else:
+                          lpm.write_text(lpm_text.replace(lpm_panel_block, lpm_replacement, 1))
+                          print("[+] lpm-levels.c: scarlet skip get_panel/panel notifier (vendor_dlkm display)")
+              else:
+                  errors.append(f"missing {lpm}")
 
           # v6.0.15: fixup 关 ARCH_LAHAINA 后，dataipa/Makefile 的 LAHAINA 专用块不跑 → GSI 未编进 vmlinux
           dataipa_mk = root / "techpack/dataipa/drivers/platform/msm/Makefile"
@@ -1927,11 +1959,12 @@ jobs:
             must "CONFIG_ARCH_LAHAINA=y"
             must "CONFIG_PINCTRL_YUPIK=y"
             must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
-            # v7.1.0 花屏修复：官方配方 = MACH_XIAOMI=y + DT_OVERLAY=y → DRM_MSM=y（显示驱动）。缺 DRM_MSM 即花屏。
+            # v7.1.3：官方 Scarlet Image 内 DRM_MSM=not set；显示在 vendor_dlkm。须 DT_OVERLAY 让 dtbo 生效，禁止内核 DRM_MSM。
             must "CONFIG_BUILD_ARM64_DT_OVERLAY=y"
             must "CONFIG_MACH_XIAOMI=y"
             must "CONFIG_MACH_XIAOMI_REDWOOD=y"
-            must "CONFIG_DRM_MSM=y"
+            grep -q "^CONFIG_DRM_MSM=y" "$CFG" && fail "CONFIG_DRM_MSM must be off (vendor_dlkm display; in-kernel DRM_MSM → garbled screen on crDroid)"
+            grep -q "^# CONFIG_DRM_MSM is not set" "$CFG" || fail "CONFIG_DRM_MSM must be explicitly disabled (align official Scarlet Image)"
             grep -q 'CONFIG_LOCALVERSION="-Scarlet' "$CFG" || fail "LOCALVERSION should match Scarlet (redwood_scarlet_min.config)"
             grep -q '^CONFIG_MMC_CRYPTO=y' "$CFG" && fail "MMC_CRYPTO must be off (crypto.c compile/boot)"
             must "CONFIG_SCSI_UFS_CRYPTO=y"
