@@ -3,6 +3,9 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.1 环境修复（run #75 卡在 env-prep）：build-env/action.yml 下载 libtinfo5 用写死 launchpad URL 且 CURLX 无 -f，
+#            偶发返回错误页被当成 .deb → "Invalid archive signature" → exit 100（与显示修复无关）。
+#            改为：先 apt，再 curl -fL + dpkg-deb 校验 + 多镜像兜底，全失败不硬炸。（此条同时让 push 命中触发路径以重编）
 # v7.1.0 ★花屏真根因（v7.0.13 noks 仍花屏后定位）：自编 .config 实测 `# CONFIG_DRM_MSM is not set`
 #            → vmlinux 完全没有 MSM 显示驱动(SDE/MDSS/DSI) → 必然花屏。v7.0.11「dtb/dtbo 字节一致仅 Image 不同」
 #            的判断是错的：Image 缺整个显示驱动。根因链：scarlet_min 强关 MACH_XIAOMI + BUILD_ARM64_DT_OVERLAY
