@@ -133,6 +133,7 @@ env:
   KERNEL_PROFILE: "miui"
   DEVICE_NAME : "redmi_note_12_pro_speed"
   DEVICE_CODENAME : "redwood"
+  KERNEL_ARCH: "arm64"
 
   # 必须 LLVM=1 纯 clang 编链；混 gcc-4.9 + clang 会在 LTO 链接时缺 __stack_chk_guard
   CUSTOM_CMDS : "LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu-"
@@ -433,45 +434,33 @@ jobs:
       - name: Install redwood stock config (device /proc/config.gz baseline)
         if: env.KERNEL_PROFILE == 'miui' || env.CONFIG_STRATEGY == 'stock'
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          test -d "$GITHUB_WORKSPACE/device_kernel" || { echo "[ERROR] device_kernel missing after build-ready"; exit 1; }
           SRC=""
           for candidate in \
-            "$GITHUB_WORKSPACE/configs/redwood_stock.config" \
-            "$GITHUB_WORKSPACE/patches/redwood/redwood_stock.config"; do
+            "$GITHUB_WORKSPACE/patches/redwood/redwood_stock.config" \
+            "$GITHUB_WORKSPACE/configs/redwood_stock.config"; do
             if [[ -f "$candidate" ]]; then
               SRC="$candidate"
-              echo "[i] found stock config: $candidate"
+              echo "[i] found stock config: $candidate ($(wc -c < "$candidate") bytes)"
               break
             fi
           done
           if [[ -z "$SRC" ]]; then
-            echo "[ERROR] missing redwood_stock.config in fork repo"
-            echo "  Upload ONE of these paths (pick either):"
-            echo "    configs/redwood_stock.config"
-            echo "    patches/redwood/redwood_stock.config   ← fork 已有 patches/redwood/，推荐"
-            echo "  Local file:"
-            echo "    autonomous-agent/android/kernel-build/configs/redwood_stock.config"
-            echo "  GitHub: Add file → Upload → commit to mainline branch"
+            echo "[ERROR] missing redwood_stock.config"
+            ls -la "$GITHUB_WORKSPACE/patches/redwood" 2>/dev/null || true
             exit 1
           fi
-          KARCH="${{ env.KERNEL_ARCH }}"
-          [[ -n "$KARCH" ]] || KARCH=arm64
-          DST="$GITHUB_WORKSPACE/device_kernel/arch/${KARCH}/configs/vendor/redwood_stock.config"
+          DST="$GITHUB_WORKSPACE/device_kernel/arch/arm64/configs/vendor/redwood_stock.config"
           mkdir -p "$(dirname "$DST")"
-          cp -fp "$SRC" "$DST"
-          sed -i 's/\r$//' "$DST"
-          # Windows adb 导出可能是 UTF-16；grep/merge_config 需要 UTF-8
-          if grep -q $'\0' "$DST" 2>/dev/null || file "$DST" | grep -qi 'utf-16'; then
-            iconv -f UTF-16LE -t UTF-8 "$DST" > "${DST}.utf8"
-            mv -f "${DST}.utf8" "$DST"
-            echo "[i] converted stock config UTF-16 -> UTF-8"
-          fi
+          sed 's/\r$//' "$SRC" > "$DST"
           LINES=$(wc -l < "$DST")
-          [[ "$LINES" -gt 5000 ]] || { echo "[ERROR] stock config too short (${LINES} lines)"; exit 1; }
-          grep -q "^CONFIG_ARCH_YUPIK=y" "$DST" || { echo "[ERROR] stock config missing ARCH_YUPIK"; exit 1; }
-          grep -q "^CONFIG_PINCTRL_REDWOOD=y" "$DST" || { echo "[ERROR] stock config missing PINCTRL_REDWOOD"; exit 1; }
-          grep -q "^CONFIG_LTO_CLANG=y" "$DST" || { echo "[ERROR] stock config missing LTO_CLANG"; exit 1; }
-          echo "[OK] installed redwood_stock.config (${LINES} lines from device /proc/config.gz)"
+          echo "[i] installed -> $DST (${LINES} lines)"
+          [[ "$LINES" -gt 5000 ]] || { echo "[ERROR] stock config too short"; exit 1; }
+          grep -E '^CONFIG_ARCH_YUPIK=y$' "$DST" >/dev/null || { echo "[ERROR] missing ARCH_YUPIK"; head -5 "$DST"; exit 1; }
+          grep -E '^CONFIG_PINCTRL_REDWOOD=y$' "$DST" >/dev/null || { echo "[ERROR] missing PINCTRL_REDWOOD"; exit 1; }
+          grep -E '^CONFIG_LTO_CLANG=y$' "$DST" >/dev/null || { echo "[ERROR] missing LTO_CLANG"; exit 1; }
+          echo "[OK] installed redwood_stock.config (${LINES} lines, device V14.0.3.0 baseline)"
 
       - name: Write redwood scarlet minimal overlay (v7)
         if: env.CONFIG_STRATEGY == 'scarlet'
