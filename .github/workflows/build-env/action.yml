@@ -499,7 +499,10 @@ runs:
             echo ">                              <"
             echo ">>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<"
 
-            if [[ "${{ env.CLANG_SOURCE }}" == *".git" ]]; then
+            if [[ -x "$GITHUB_WORKSPACE/clang-custom/bin/clang" ]]; then
+              echo "[OK] clang-custom already prepared (sparse prebuilt), skip clone"
+              "$GITHUB_WORKSPACE/clang-custom/bin/clang" --version
+            elif [[ "${{ env.CLANG_SOURCE }}" == *".git" ]]; then
                 git clone "${{ env.CLANG_SOURCE }}" -b "${{ env.CLANG_BRANCH }}" clang-custom --depth=1
             elif [[ "${{ env.CLANG_SOURCE }}" == *'.tar.gz' ]]; then
                 ${{ env.CURLX }} "${{ env.CLANG_SOURCE }}" clang.tar.gz

@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.2.2 ★build-env 跳过已存在的 clang-custom（Fetch sparse 步骤先于 build-env）。
 # v7.2.1 ★MIUI clang：mirror-goog-main-prebuilts 无 clang-r450784d → 回退 r547379 + 候选链。
 # v7.2.0 ★clang 修复：删除对 AOSP Go 包装 clang 的重命名 wrapper（command.go:142 clang-bin 报错）；
 #            改 build-process CC="ccache clang --target=aarch64-linux-gnu"。
