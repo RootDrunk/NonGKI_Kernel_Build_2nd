@@ -97,8 +97,18 @@ on:
       - 'patches/redwood/**'
   workflow_call:
   workflow_dispatch:
+    inputs:
+      kernel_profile:
+        description: "miui=MIUI原厂(MiCode官方源码) | scarlet=仅crDroid/AOSP(勿刷MIUI)"
+        type: choice
+        options:
+          - miui
+          - scarlet
+        default: miui
 
 env:
+  # push 默认 miui：红米原系统必须走 MiCode 官方源码，Scarlet/AOSP 刷 MIUI 会花屏
+  KERNEL_PROFILE: "miui"
   DEVICE_NAME : "redmi_note_12_pro_speed"
   DEVICE_CODENAME : "redwood"
 
@@ -207,6 +217,32 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Resolve kernel profile (MIUI official vs Scarlet AOSP)
+        run: |
+          set -euo pipefail
+          PROFILE="${{ github.event.inputs.kernel_profile }}"
+          if [ -z "$PROFILE" ]; then PROFILE="${{ env.KERNEL_PROFILE }}"; fi
+          if [ -z "$PROFILE" ]; then PROFILE="miui"; fi
+          echo "KERNEL_PROFILE=$PROFILE" >> $GITHUB_ENV
+          if [ "$PROFILE" = "miui" ]; then
+            echo "KERNEL_SOURCE=https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git" >> $GITHUB_ENV
+            echo "KERNEL_BRANCH=redwood-s-oss" >> $GITHUB_ENV
+            echo "DEFCONFIG_NAME=vendor/redwood_QGKI.config" >> $GITHUB_ENV
+            echo "CONFIG_STRATEGY=stock" >> $GITHUB_ENV
+            echo "BOOT_TEST_PHASE=noks" >> $GITHUB_ENV
+            echo "SUSFS_BOOT_TEST=true" >> $GITHUB_ENV
+            echo "SUSFS_ENABLE=false" >> $GITHUB_ENV
+            echo "ROM_TEXT=miui_v14_noks" >> $GITHUB_ENV
+            echo "[OK] profile=miui — MiCode redwood-s-oss + stock merge（MIUI 原系统，避免花屏）"
+          else
+            echo "KERNEL_SOURCE=https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git" >> $GITHUB_ENV
+            echo "KERNEL_BRANCH=redwood" >> $GITHUB_ENV
+            echo "DEFCONFIG_NAME=vendor/xiaomi-qgki_defconfig" >> $GITHUB_ENV
+            echo "CONFIG_STRATEGY=scarlet" >> $GITHUB_ENV
+            echo "ROM_TEXT=crdroid_a16_noks" >> $GITHUB_ENV
+            echo "[OK] profile=scarlet — 仅 crDroid/AOSP，禁止刷入 MIUI"
+          fi
 
       - name: Compilation environment preparation
         uses: ./.github/workflows/build-env
