@@ -269,6 +269,26 @@ jobs:
           clang-custom/bin/clang --version
           echo "[OK] clang-custom -> AOSP ${{ env.CLANG_DIR_NAME }}"
 
+      - name: Wrap clang with aarch64 --target (fix atomic_lse x0/x2)
+        run: |
+          set -euxo pipefail
+          BIN="$GITHUB_WORKSPACE/clang-custom/bin"
+          for tool in clang clang++; do
+            [[ -x "$BIN/$tool" ]] || continue
+            if [[ ! -x "$BIN/${tool}-bin" ]]; then
+              cp -a "$BIN/$tool" "$BIN/${tool}-bin"
+            fi
+            cat > "$BIN/$tool" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "\$(dirname "\$0")/${tool}-bin" --target=aarch64-linux-gnu "\$@"
+          EOF
+            chmod +x "$BIN/$tool"
+          done
+          "$BIN/clang" -x c -c /dev/null -o /tmp/clang-aarch64-test.o
+          rm -f /tmp/clang-aarch64-test.o
+          echo "[OK] clang wrapper injects --target=aarch64-linux-gnu (ccache clang in build-process stays valid)"
+
       # build-ready 用 KERNELSU_AUTO_GET=true + AUTO_FORK=resukisu 拉取 ReSukiSU（已验证可编译）。
       #   注意：KERNELSU_AUTO_GET=false 会走 KERNELSU_MANUAL → curl "$KERNELSU_SOURCE"(空) → URL malformed。
       # boot-test 阶段随后由 "Restore Scarlet native KernelSU" 把 drivers/kernelsu 还原为 Scarlet 原生(ksuver 32486)。
