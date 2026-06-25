@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.2.4 ★MIUI compile：xiaomi_touch.c 三处 K&R 空参 () → (void)（clang -Wstrict-prototypes -Werror）。
 # v7.2.3 ★MIUI compile：usb_qdss.h stub 3 参 vs coresight-byte-cntr.c 2 参 → 对齐 stub。
 # v7.2.2 ★build-env 跳过已存在的 clang-custom（Fetch sparse 步骤先于 build-env）。
 # v7.2.1 ★MIUI clang：mirror-goog-main-prebuilts 无 clang-r450784d → 回退 r547379 + 候选链。
@@ -765,6 +766,34 @@ jobs:
                       errors.append("usb_qdss.h: usb_qdss_alloc_req stub signature not found")
               else:
                   errors.append("missing include/linux/usb/usb_qdss.h")
+              xiaomi_touch = root / "drivers/input/touchscreen/xiaomi/xiaomi_touch.c"
+              if xiaomi_touch.is_file():
+                  text = xiaomi_touch.read_text()
+                  proto_fixes = [
+                      (
+                          "struct class *get_xiaomi_touch_class()",
+                          "struct class *get_xiaomi_touch_class(void)",
+                      ),
+                      (
+                          "struct device *get_xiaomi_touch_dev()",
+                          "struct device *get_xiaomi_touch_dev(void)",
+                      ),
+                      ("int update_touch_rawdata()", "int update_touch_rawdata(void)"),
+                  ]
+                  changed = 0
+                  for old, new in proto_fixes:
+                      if old in text:
+                          text = text.replace(old, new, 1)
+                          changed += 1
+                  if changed:
+                      xiaomi_touch.write_text(text)
+                      print(f"[+] xiaomi_touch.c: {changed} strict-prototypes (void) fixes")
+                  elif "get_xiaomi_touch_class(void)" in text:
+                      print("[=] xiaomi_touch.c: strict-prototypes fixes already applied")
+                  else:
+                      errors.append("xiaomi_touch.c: strict-prototypes anchors missing")
+              else:
+                  errors.append("missing drivers/input/touchscreen/xiaomi/xiaomi_touch.c")
               if errors:
                   print("!! redwood MIUI compile fixes FAILED:")
                   for e in errors:
