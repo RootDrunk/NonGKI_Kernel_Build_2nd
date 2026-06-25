@@ -454,6 +454,9 @@ jobs:
             echo "  GitHub: Add file → Upload → commit to mainline branch"
             exit 1
           fi
+          KARCH="${{ env.KERNEL_ARCH }}"
+          [[ -n "$KARCH" ]] || KARCH=arm64
+          DST="$GITHUB_WORKSPACE/device_kernel/arch/${KARCH}/configs/vendor/redwood_stock.config"
           mkdir -p "$(dirname "$DST")"
           cp -fp "$SRC" "$DST"
           sed -i 's/\r$//' "$DST"

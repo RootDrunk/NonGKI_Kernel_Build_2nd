@@ -296,6 +296,7 @@ runs:
           fi
 
       - name: Set KSU and SUSFS for DEFCONFIG
+        if: env.SKIP_KERNELSU_SETUP != 'true'
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE/device_kernel
