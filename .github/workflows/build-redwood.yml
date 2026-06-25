@@ -454,8 +454,9 @@ jobs:
             echo "  GitHub: Add file → Upload → commit to mainline branch"
             exit 1
           fi
-          DST="$GITHUB_WORKSPACE/device_kernel/arch/${{ env.KERNEL_ARCH }}/configs/vendor/redwood_stock.config"
+          mkdir -p "$(dirname "$DST")"
           cp -fp "$SRC" "$DST"
+          sed -i 's/\r$//' "$DST"
           # Windows adb 导出可能是 UTF-16；grep/merge_config 需要 UTF-8
           if grep -q $'\0' "$DST" 2>/dev/null || file "$DST" | grep -qi 'utf-16'; then
             iconv -f UTF-16LE -t UTF-8 "$DST" > "${DST}.utf8"
