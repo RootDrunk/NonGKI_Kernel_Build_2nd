@@ -130,7 +130,13 @@ runs:
                 echo "[+] Pre-built SELinux done."
             fi
 
-            make -j$(nproc --all) CC="$CLANG_CC" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
+            MAKE_TARGET="${{ env.KERNEL_MAKE_TARGET }}"
+            if [[ -n "$MAKE_TARGET" ]]; then
+                echo "[+] make target: $MAKE_TARGET (skip modules/modpost)"
+                make -j$(nproc --all) CC="$CLANG_CC" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" "$MAKE_TARGET" 2>&1|tee error.log
+            else
+                make -j$(nproc --all) CC="$CLANG_CC" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
+            fi
           else
             echo "===================="
             echo "=Execuate GCC Build="
