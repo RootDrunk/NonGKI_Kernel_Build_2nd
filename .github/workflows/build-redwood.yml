@@ -3,6 +3,7 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.2.5 ★MIUI：编译前 gate 强制 sed xiaomi_touch.c；(void) 补丁 + KCFLAGS 兜底。
 # v7.2.4 ★MIUI compile：xiaomi_touch.c 三处 K&R 空参 () → (void)（clang -Wstrict-prototypes -Werror）。
 # v7.2.3 ★MIUI compile：usb_qdss.h stub 3 参 vs coresight-byte-cntr.c 2 参 → 对齐 stub。
 # v7.2.2 ★build-env 跳过已存在的 clang-custom（Fetch sparse 步骤先于 build-env）。
@@ -259,6 +260,7 @@ jobs:
             echo "ROM_TEXT=miui_v14_noks" >> $GITHUB_ENV
             echo "CLANG_DIR_NAME=clang-r547379" >> $GITHUB_ENV
             echo "KERNEL_CC=ccache clang --target=aarch64-linux-gnu" >> $GITHUB_ENV
+            echo "EXTRA_CMDS=LD=ld.lld KCFLAGS=-Wno-error=strict-prototypes" >> $GITHUB_ENV
             echo "SKIP_KERNELSU_SETUP=true" >> $GITHUB_ENV
             echo "MERGE_CONFIG_FILES=vendor/redwood_QGKI.config,vendor/redwood_noks.config" >> $GITHUB_ENV
             echo "[OK] profile=miui — MiCode redwood-s-oss + LLVM clang-r547379"
@@ -720,7 +722,7 @@ jobs:
           import sys
           from pathlib import Path
 
-          kernel_profile = os.environ.get("KERNEL_PROFILE", "scarlet").lower()
+          kernel_profile = os.environ.get("KERNEL_PROFILE", "miui").lower()
           is_miui = kernel_profile == "miui"
           skip_susfs = os.environ.get("SUSFS_BOOT_TEST", "").lower() == "true"
           config_strategy = os.environ.get("CONFIG_STRATEGY", "scarlet").lower()
@@ -769,25 +771,14 @@ jobs:
               xiaomi_touch = root / "drivers/input/touchscreen/xiaomi/xiaomi_touch.c"
               if xiaomi_touch.is_file():
                   text = xiaomi_touch.read_text()
-                  proto_fixes = [
-                      (
-                          "struct class *get_xiaomi_touch_class()",
-                          "struct class *get_xiaomi_touch_class(void)",
-                      ),
-                      (
-                          "struct device *get_xiaomi_touch_dev()",
-                          "struct device *get_xiaomi_touch_dev(void)",
-                      ),
-                      ("int update_touch_rawdata()", "int update_touch_rawdata(void)"),
-                  ]
-                  changed = 0
-                  for old, new in proto_fixes:
-                      if old in text:
-                          text = text.replace(old, new, 1)
-                          changed += 1
-                  if changed:
+                  text, n = re.subn(
+                      r"\b(get_xiaomi_touch_class|get_xiaomi_touch_dev|update_touch_rawdata)\(\)",
+                      r"\1(void)",
+                      text,
+                  )
+                  if n:
                       xiaomi_touch.write_text(text)
-                      print(f"[+] xiaomi_touch.c: {changed} strict-prototypes (void) fixes")
+                      print(f"[+] xiaomi_touch.c: {n} strict-prototypes (void) fixes")
                   elif "get_xiaomi_touch_class(void)" in text:
                       print("[=] xiaomi_touch.c: strict-prototypes fixes already applied")
                   else:
@@ -2070,6 +2061,25 @@ jobs:
 
           print("[OK] redwood 5.4 compile fixes applied")
           PY
+
+      - name: MIUI pre-build source gate (xiaomi_touch strict-prototypes)
+        if: env.KERNEL_PROFILE == 'miui'
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/device_kernel"
+          F=drivers/input/touchscreen/xiaomi/xiaomi_touch.c
+          test -f "$F"
+          sed -i \
+            -e 's/\bget_xiaomi_touch_class()/get_xiaomi_touch_class(void)/g' \
+            -e 's/\bget_xiaomi_touch_dev()/get_xiaomi_touch_dev(void)/g' \
+            -e 's/\bupdate_touch_rawdata()/update_touch_rawdata(void)/g' \
+            "$F"
+          if grep -qE 'get_xiaomi_touch_class\(\)|get_xiaomi_touch_dev\(\)|update_touch_rawdata\(\)' "$F"; then
+            echo "[ERROR] xiaomi_touch.c still has empty-param () prototypes:"
+            grep -nE 'get_xiaomi_touch_class|get_xiaomi_touch_dev|update_touch_rawdata' "$F" || true
+            exit 1
+          fi
+          echo "[OK] xiaomi_touch.c strict-prototypes gate passed"
 
       - name: Build Process
         uses: ./.github/workflows/build-process
