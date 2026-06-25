@@ -94,6 +94,7 @@ runs:
           bash clean_hook.sh
 
       - name: Set KernelSU
+        if: env.SKIP_KERNELSU_SETUP != 'true'
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE/device_kernel

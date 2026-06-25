@@ -3,6 +3,12 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.2.0 ★clang 修复：删除对 AOSP Go 包装 clang 的重命名 wrapper（command.go:142 clang-bin 报错）；
+#            改 build-process CC="ccache clang --target=aarch64-linux-gnu"。
+#            MIUI profile 用 clang-r450784d（Android13 时代 LLVM）；Scarlet 仍 r547379。
+#            步骤名「Android 内核 LLVM」≠ crDroid ROM；小米 QGKI 标准即 Google prebuilts clang。
+# v7.1.7 ★clang 交叉编译：build-process 用 CC="ccache clang" 时缺 --target=aarch64-linux-gnu
+#            → atomic_lse.h 报 unknown register x0/x2；wrapper 注入 --target。
 # v7.1.6 ★MIUI defconfig：vendor/redwood_QGKI.config 是 fragment，须 gki_defconfig 打底再 merge；
 #            勿 merge Scarlet 的 redwood_stock.config（/proc/config.gz 来自另一棵树）。
 # v7.1.5 ★MIUI compile fixes：MiCode 树跳过 Scarlet Python 补丁集（无 drivers/kernelsu / 不同 dts/binder 结构）；
@@ -125,7 +131,11 @@ env:
   KERNEL_SOURCE : "https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git"
   KERNEL_BRANCH : "redwood"
 
-  # clang14(r416183b) 编 Scarlet 5.4 易触发 crypto.c 硬错误；AOSP clang20(r547379) 已在本机 v5.0 验证
+  # arm64 内核交叉编译：CC 须带 --target（勿重命名 AOSP clang 二进制，其为 Go wrapper）
+  KERNEL_CC: "ccache clang --target=aarch64-linux-gnu"
+
+  # clang14(r416183b) 编 Scarlet 5.4 易触发 crypto.c 硬错误；Scarlet 用 clang20(r547379)
+  # MIUI MiCode redwood-s-oss 为 Android13 时代 → Resolve profile 会覆盖为 clang-r450784d
   CLANG_SOURCE : "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
   CLANG_BRANCH : "mirror-goog-main-prebuilts"
   CLANG_DIR_NAME : "clang-r547379"
@@ -203,6 +213,9 @@ env:
   BUILD_DEBUGGER: "true"
   SKIP_PATCH: "true"
 
+  # miui noks 由 Resolve profile 设为 true，跳过 build-ready 内 ReSukiSU 注入
+  SKIP_KERNELSU_SETUP: "false"
+
   BUILD_OTHER_CONFIG: "true"
   # 运行时由 "Configure merge config paths" 写入；默认仅 stock
   MERGE_CONFIG_FILES: "vendor/redwood_scarlet_min.config"
@@ -240,20 +253,24 @@ jobs:
             echo "SUSFS_BOOT_TEST=true" >> $GITHUB_ENV
             echo "SUSFS_ENABLE=false" >> $GITHUB_ENV
             echo "ROM_TEXT=miui_v14_noks" >> $GITHUB_ENV
-            echo "[OK] profile=miui — MiCode redwood-s-oss: gki_defconfig + vendor/redwood_QGKI.config merge"
+            echo "CLANG_DIR_NAME=clang-r450784d" >> $GITHUB_ENV
+            echo "KERNEL_CC=ccache clang --target=aarch64-linux-gnu" >> $GITHUB_ENV
+            echo "SKIP_KERNELSU_SETUP=true" >> $GITHUB_ENV
+            echo "MERGE_CONFIG_FILES=vendor/redwood_QGKI.config,vendor/redwood_noks.config" >> $GITHUB_ENV
+            echo "[OK] profile=miui — MiCode redwood-s-oss + Android13 LLVM (clang-r450784d)"
           else
             echo "KERNEL_SOURCE=https://github.com/Atom-X-Devs/scarlet_xiaomi_sm7325.git" >> $GITHUB_ENV
             echo "KERNEL_BRANCH=redwood" >> $GITHUB_ENV
             echo "DEFCONFIG_NAME=vendor/xiaomi-qgki_defconfig" >> $GITHUB_ENV
             echo "CONFIG_STRATEGY=scarlet" >> $GITHUB_ENV
             echo "ROM_TEXT=crdroid_a16_noks" >> $GITHUB_ENV
+            echo "CLANG_DIR_NAME=clang-r547379" >> $GITHUB_ENV
+            echo "KERNEL_CC=ccache clang --target=aarch64-linux-gnu" >> $GITHUB_ENV
+            echo "SKIP_KERNELSU_SETUP=false" >> $GITHUB_ENV
             echo "[OK] profile=scarlet — 仅 crDroid/AOSP，禁止刷入 MIUI"
           fi
 
-      - name: Compilation environment preparation
-        uses: ./.github/workflows/build-env
-
-      - name: Override toolchain to AOSP clang 20 (r547379 sparse)
+      - name: Fetch Android kernel LLVM toolchain (Google prebuilts, not crDroid ROM)
         run: |
           set -euxo pipefail
           rm -rf clang-custom clang-sparse
@@ -261,33 +278,18 @@ jobs:
             -b "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_SOURCE }}" clang-sparse
           cd clang-sparse
           git sparse-checkout set "${{ env.CLANG_DIR_NAME }}"
-          test -x "${{ env.CLANG_DIR_NAME }}/bin/clang" || { echo "[ERROR] clang missing"; ls -la "${{ env.CLANG_DIR_NAME }}/bin" || true; exit 1; }
+          test -x "${{ env.CLANG_DIR_NAME }}/bin/clang" || { echo "[ERROR] clang missing in ${{ env.CLANG_DIR_NAME }}"; ls -la "${{ env.CLANG_DIR_NAME }}/bin" || true; exit 1; }
           mkdir -p ../clang-custom
           cp -a "${{ env.CLANG_DIR_NAME }}"/* ../clang-custom/
           cd ..
           rm -rf clang-sparse
           clang-custom/bin/clang --version
-          echo "[OK] clang-custom -> AOSP ${{ env.CLANG_DIR_NAME }}"
-
-      - name: Wrap clang with aarch64 --target (fix atomic_lse x0/x2)
-        run: |
-          set -euxo pipefail
-          BIN="$GITHUB_WORKSPACE/clang-custom/bin"
-          for tool in clang clang++; do
-            [[ -x "$BIN/$tool" ]] || continue
-            if [[ ! -x "$BIN/${tool}-bin" ]]; then
-              cp -a "$BIN/$tool" "$BIN/${tool}-bin"
-            fi
-            cat > "$BIN/$tool" <<EOF
-          #!/usr/bin/env bash
-          set -euo pipefail
-          exec "\$(dirname "\$0")/${tool}-bin" --target=aarch64-linux-gnu "\$@"
-          EOF
-            chmod +x "$BIN/$tool"
-          done
-          "$BIN/clang" -x c -c /dev/null -o /tmp/clang-aarch64-test.o
+          clang-custom/bin/clang --target=aarch64-linux-gnu -x c -c /dev/null -o /tmp/clang-aarch64-test.o
           rm -f /tmp/clang-aarch64-test.o
-          echo "[OK] clang wrapper injects --target=aarch64-linux-gnu (ccache clang in build-process stays valid)"
+          echo "[OK] clang-custom -> ${{ env.CLANG_DIR_NAME }} (QGKI/MIUI 标准 Android 内核交叉编译 LLVM)"
+
+      - name: Compilation environment preparation
+        uses: ./.github/workflows/build-env
 
       # build-ready 用 KERNELSU_AUTO_GET=true + AUTO_FORK=resukisu 拉取 ReSukiSU（已验证可编译）。
       #   注意：KERNELSU_AUTO_GET=false 会走 KERNELSU_MANUAL → curl "$KERNELSU_SOURCE"(空) → URL malformed。
@@ -370,7 +372,7 @@ jobs:
           echo "[OK] noks boot-test: ReSukiSU stripped, CONFIG_KSU off via redwood_noks.config"
 
       - name: Strip ReSukiSU for noks boot-test (MiCode MIUI)
-        if: env.KERNEL_PROFILE == 'miui' && env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
+        if: env.KERNEL_PROFILE == 'miui' && env.SKIP_KERNELSU_SETUP != 'true' && env.SUSFS_BOOT_TEST == 'true' && env.BOOT_TEST_PHASE == 'noks'
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/device_kernel"

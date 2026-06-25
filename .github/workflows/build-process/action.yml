@@ -46,11 +46,18 @@ runs:
             export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
           fi
 
+          CLANG_CC="${{ env.KERNEL_CC }}"
+          if [[ -z "$CLANG_CC" && "${{ env.KERNEL_ARCH }}" == "arm64" ]]; then
+            CLANG_CC="ccache clang --target=aarch64-linux-gnu"
+          elif [[ -z "$CLANG_CC" ]]; then
+            CLANG_CC="ccache clang"
+          fi
+
           if [[ "$BUILD_CLANG" == "true" ]]; then
             echo "========================"
             echo "=Read Defconfig (Clang)="
             echo "========================"
-            make CC="ccache clang" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
+            make CC="$CLANG_CC" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
           else
             echo "================"
             echo "=Read Defconfig="
@@ -70,7 +77,7 @@ runs:
                 echo "==============================="
                 echo "=Execuate olddefconfig (Clang)="
                 echo "==============================="
-                make CC="ccache clang" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
+                make CC="$CLANG_CC" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
             else
                 echo "======================="
                 echo "=Execuate olddefconfig="
@@ -88,7 +95,7 @@ runs:
                 echo "==============================="
                 echo "=Execuate olddefconfig (Clang)="
                 echo "==============================="
-                make CC="ccache clang" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
+                make CC="$CLANG_CC" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
             else
                 echo "======================="
                 echo "=Execuate olddefconfig="
@@ -119,11 +126,11 @@ runs:
             echo "======================"
 
             if [[ "${{ env.BASEBAND_GUARD_ENABLE }}" == "true" ]]; then
-                make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" security/selinux/
+                make -j$(nproc --all) CC="$CLANG_CC" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" security/selinux/
                 echo "[+] Pre-built SELinux done."
             fi
 
-            make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
+            make -j$(nproc --all) CC="$CLANG_CC" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
           else
             echo "===================="
             echo "=Execuate GCC Build="
