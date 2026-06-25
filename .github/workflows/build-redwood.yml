@@ -3,6 +3,8 @@ name: Build Redmi Note 12 Pro Speed (redwood / SukiSU + SUSFS)
 # 用法见 ../../docs/Root隐身-redwood-SUSFS云编译保姆级.md
 # fork 路径: .github/workflows/build-redwood.yml
 #
+# v7.1.5 ★MIUI compile fixes：MiCode 树跳过 Scarlet Python 补丁集（无 drivers/kernelsu / 不同 dts/binder 结构）；
+#            config 校验与 AK3 打包走 miui 专用分支（Image-only boot 替换，非 crDroid vendor_boot）。
 # v7.1.4 ★MIUI profile：MiCode 官方树无 drivers/kernelsu — Strip/Restore Scarlet KSU 步骤仅 scarlet；
 #            miui noks 走独立 ReSukiSU 剥离；stock fixup（关 MACH_XIAOMI）仅 scarlet，miui 用 stock+noks merge。
 # v7.1.3 ★花屏二轮根因（run #77 编过仍花屏，真机刷入后确认）：
@@ -660,6 +662,7 @@ jobs:
         env:
           SUSFS_BOOT_TEST: ${{ env.SUSFS_BOOT_TEST }}
           CONFIG_STRATEGY: ${{ env.CONFIG_STRATEGY }}
+          KERNEL_PROFILE: ${{ env.KERNEL_PROFILE }}
         run: |
           cd "$GITHUB_WORKSPACE/device_kernel"
           python3 <<'PY'
@@ -668,11 +671,39 @@ jobs:
           import sys
           from pathlib import Path
 
+          kernel_profile = os.environ.get("KERNEL_PROFILE", "scarlet").lower()
+          is_miui = kernel_profile == "miui"
           skip_susfs = os.environ.get("SUSFS_BOOT_TEST", "").lower() == "true"
           config_strategy = os.environ.get("CONFIG_STRATEGY", "scarlet").lower()
-          use_display_shims = config_strategy == "stock"
+          use_display_shims = config_strategy == "stock" and not is_miui
           root = Path(".")
           errors = []
+
+          if is_miui:
+              # MiCode redwood-s-oss 与 Scarlet 树结构不同：勿套用 KSU hook 校验 / get_panel 桩 / Scarlet fixup
+              drm_mk = root / "drivers/gpu/drm/Makefile"
+              if drm_mk.is_file():
+                  text = drm_mk.read_text()
+                  marker = "# redwood-miui: upstream drm/msm disabled (techpack/display + KGSL)"
+                  if marker in text:
+                      print("[=] drm/Makefile: upstream msm/ already disabled (miui)")
+                  elif "obj-$(CONFIG_DRM_MSM) += msm/" in text:
+                      text = text.replace(
+                          "obj-$(CONFIG_DRM_MSM) += msm/",
+                          marker + "\n#obj-$(CONFIG_DRM_MSM) += msm/",
+                          1,
+                      )
+                      drm_mk.write_text(text)
+                      print("[+] drm/Makefile: disabled upstream drm/msm (MiCode MIUI QGKI)")
+                  else:
+                      print("[=] drm/Makefile: no upstream msm/ line (MiCode tree)")
+              if errors:
+                  print("!! redwood MIUI compile fixes FAILED:")
+                  for e in errors:
+                      print("  -", e)
+                  sys.exit(1)
+              print("[OK] redwood MIUI (MiCode) minimal compile fixes — skip Scarlet patch set")
+              sys.exit(0)
 
           if not skip_susfs:
               task_mmu = root / "fs/proc/task_mmu.c"
@@ -2074,6 +2105,24 @@ jobs:
               echo "[OK] scarlet phase-2: ReSukiSU + SUSFS (spoof off, boot-safe)"
             fi
             echo "[OK] redwood .config verified (${LINES} lines, scarlet v7)"
+          elif [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
+            [[ "$LINES" -gt 5000 ]] || fail ".config too short (${LINES} lines) — MiCode stock merge failed?"
+            must "CONFIG_ARCH_YUPIK=y"
+            must "CONFIG_MACH_XIAOMI=y"
+            must "CONFIG_LTO_CLANG=y"
+            must "CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y"
+            if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "${{ env.BOOT_TEST_PHASE }}" == "noks" ]]; then
+              grep -q "^CONFIG_KSU=y" "$CFG" && fail "miui noks must NOT have CONFIG_KSU=y"
+              echo "[OK] miui noks: no KSU (pure MiCode kernel boot test)"
+            elif [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" ]]; then
+              must "CONFIG_KSU=y"
+              echo "[OK] miui boot-test: CONFIG_KSU=y"
+            else
+              must "CONFIG_KSU=y"
+              must "CONFIG_KSU_SUSFS=y"
+              echo "[OK] miui phase-2: ReSukiSU + SUSFS"
+            fi
+            echo "[OK] redwood .config verified (${LINES} lines, miui MiCode)"
           else
           [[ "$LINES" -gt 5000 ]] || fail ".config too short (${LINES} lines) — stock merge failed?"
           must "CONFIG_LTO_CLANG=y"
@@ -2130,6 +2179,54 @@ jobs:
 
           if [[ ! -d Anykernel3 ]]; then
             git clone "${{ env.AK3_SOURCE }}" -b "${{ env.AK3_BRANCH }}" Anykernel3 --depth=1
+          fi
+
+          if [[ "${{ env.KERNEL_PROFILE }}" == "miui" ]]; then
+            KSU_LABEL="MIUI MiCode noks boot-test redwood ${TIME}"
+            cat > Anykernel3/anykernel.sh <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## redwood MIUI V14 — MiCode official kernel (replace boot only)
+
+          properties() { '
+          kernel.string=MIUI MiCode redwood noks
+          kernel.revision=5.4
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=redwood
+          device.name2=22101320C
+          device.name3=
+          device.name4=
+          device.name5=
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;
+          NO_BLOCK_DISPLAY=1;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          EOF
+            sed -i 's/^          //' Anykernel3/anykernel.sh
+            mkdir -p tmp
+            [[ -f "$IMAGE_DIR/Image" ]] || { echo "[ERROR] missing Image"; exit 1; }
+            cp -fp "$IMAGE_DIR/Image" tmp/
+            cp -rp ./Anykernel3/* tmp/
+            cd tmp
+            7za a -mx9 tmp.zip *
+            cd ..
+            AK3_ZIP="${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-${TIME}-Anykernel3.zip"
+            cp -fp tmp/tmp.zip "$GITHUB_WORKSPACE/device_kernel/$AK3_ZIP"
+            rm -rf tmp
+            echo "PACK_METHOD=Anykernel3" >> "$GITHUB_ENV"
+            echo "PACK_NAME=$AK3_ZIP" >> "$GITHUB_ENV"
+            echo "[OK] miui pack: Image-only AK3 for fastboot boot / TWRP sideload boot"
+            echo "[!!] MIUI: use fastboot boot $AK3_ZIP or TWRP install — NOT crDroid vendor_boot layout"
+            exit 0
           fi
 
           if [[ "${{ env.SUSFS_BOOT_TEST }}" == "true" && "${{ env.BOOT_TEST_PHASE }}" == "ksu" ]]; then
